@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User profile information and budget limits",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "avatar": { "type": "string" },
+        "balance": { "type": "number" },
+        "insight": { "type": "string" },
+        "tier": { "type": "string", "enum": ["free", "pro"] },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "week": { "type": "number" },
+            "month": { "type": "number" },
+            "year": { "type": "number" }
+          },
+          "required": ["week", "month", "year"]
+        }
+      },
+      "required": ["name", "email", "balance", "limits"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A single financial transaction",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "date": { "type": "string" },
+        "amount": { "type": "number" },
+        "category": { "type": "string" },
+        "iconName": { "type": "string" }
+      },
+      "required": ["name", "date", "amount", "category", "iconName"]
+    },
+    "CategoryBudget": {
+      "title": "Category Budget",
+      "description": "Budget and spending for a specific category",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "spent": { "type": "number" },
+        "limit": { "type": "number" },
+        "colorClass": { "type": "string" },
+        "iconName": { "type": "string" }
+      },
+      "required": ["name", "spent", "limit", "colorClass", "iconName"]
+    },
+    "Challenge": {
+      "title": "Challenge",
+      "description": "A challenge with potential savings",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "description": { "type": "string" },
+        "potentialSaving": { "type": "number" },
+        "status": { "type": "string", "enum": ["available", "in_progress", "completed"] },
+        "category": { "type": "string" },
+        "level": { "type": "number" },
+        "progress": { "type": "number" },
+        "isAiGenerated": { "type": "boolean" }
+      },
+      "required": ["title", "subtitle", "description", "potentialSaving", "status", "category", "level"]
+    },
+    "Account": {
+      "title": "Account",
+      "description": "A linked bank or financial account",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "balance": { "type": "number" },
+        "bankName": { "type": "string" },
+        "type": { "type": "string", "enum": ["current", "paypal", "livret_a", "crypto"] },
+        "iconName": { "type": "string", "enum": ["bank", "wallet", "bitcoin", "card"] },
+        "colorClass": { "type": "string" }
+      },
+      "required": ["name", "balance", "bankName", "type", "iconName", "colorClass"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile data"
+    },
+    "/users/{userId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "User transactions"
+    },
+    "/users/{userId}/categories/{categoryId}": {
+      "schema": "CategoryBudget",
+      "description": "User budget categories"
+    },
+    "/users/{userId}/challenges/{challengeId}": {
+      "schema": "Challenge",
+      "description": "User challenges and progress"
+    },
+    "/users/{userId}/accounts/{accountId}": {
+      "schema": "Account",
+      "description": "User financial accounts"
+    }
+  }
+}

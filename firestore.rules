@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId
+        && (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'password');
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['name', 'email', 'balance', 'limits', 'tier']) 
+        && (data.keys().size() >= 5 && data.keys().size() <= 7)
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.email is string && data.email.size() <= 255
+        && data.balance is number
+        && data.tier in ['free', 'pro']
+        && (!data.keys().hasAll(['insight']) || (data.insight is string && data.insight.size() <= 1000))
+        && data.limits is map
+        && data.limits.keys().hasAll(['week', 'month', 'year'])
+        && data.limits.keys().size() == 3
+        && data.limits.week is number
+        && data.limits.month is number
+        && data.limits.year is number
+        && (!data.keys().hasAll(['avatar']) || (data.avatar is string && data.avatar.size() <= 500));
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['name', 'date', 'amount', 'category', 'iconName'])
+        && (data.keys().size() >= 5 && data.keys().size() <= 7)
+        && data.name is string && data.name.size() <= 100
+        && data.date is string && data.date.size() <= 50
+        && data.amount is number
+        && data.category is string && data.category.size() <= 50
+        && data.iconName is string && data.iconName.size() <= 50
+        && (!data.keys().hasAll(['accountId']) || (data.accountId is string && data.accountId.size() <= 128));
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['name', 'spent', 'limit', 'colorClass', 'iconName'])
+        && (data.keys().size() >= 5 && data.keys().size() <= 6)
+        && data.name is string && data.name.size() <= 50
+        && data.spent is number
+        && data.limit is number
+        && data.colorClass is string && data.colorClass.size() <= 50
+        && data.iconName is string && data.iconName.size() <= 50;
+    }
+
+    function isValidChallenge(data) {
+      return data.keys().hasAll(['title', 'subtitle', 'description', 'potentialSaving', 'status', 'category', 'level'])
+        && (data.keys().size() >= 7 && data.keys().size() <= 9)
+        && data.title is string && data.title.size() <= 100
+        && data.subtitle is string && data.subtitle.size() <= 100
+        && data.description is string && data.description.size() <= 500
+        && data.potentialSaving is number
+        && data.status in ['available', 'in_progress', 'completed']
+        && data.category is string && data.category.size() <= 50
+        && data.level is number
+        && (!data.keys().hasAll(['progress']) || (data.progress is number))
+        && (!data.keys().hasAll(['isAiGenerated']) || (data.isAiGenerated is bool));
+    }
+
+    function isValidAccount(data, userId) {
+      let isPro = get(/databases/$(database)/documents/users/$(userId)).data.tier == 'pro';
+      return data.keys().hasAll(['name', 'balance', 'bankName', 'type', 'iconName', 'colorClass'])
+        && (data.keys().size() >= 6 && data.keys().size() <= 8)
+        && data.name is string && data.name.size() <= 100
+        && data.balance is number
+        && data.bankName is string && data.bankName.size() <= 100
+        && data.type in ['current', 'paypal', 'livret_a', 'crypto']
+        && (data.type in ['current', 'paypal'] || isPro)
+        && data.iconName in ['bank', 'wallet', 'bitcoin', 'card']
+        && data.colorClass is string && data.colorClass.size() <= 50;
+    }
+
+    // --- Match Rules ---
+
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(incoming());
+      allow update: if isOwner(userId) && isValidUserProfile(incoming());
+
+      match /transactions/{transactionId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidTransaction(incoming()) && isValidId(transactionId);
+        allow update: if isOwner(userId) && isValidTransaction(incoming());
+        allow delete: if isOwner(userId);
+      }
+
+      match /categories/{categoryId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidCategory(incoming()) && isValidId(categoryId);
+        allow update: if isOwner(userId) && isValidCategory(incoming());
+      }
+
+      match /challenges/{challengeId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidChallenge(incoming()) && isValidId(challengeId);
+        allow update: if isOwner(userId) && isValidChallenge(incoming());
+      }
+
+      match /accounts/{accountId} {
+        allow list, get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidAccount(incoming(), userId) && isValidId(accountId);
+        allow update: if isOwner(userId) && isValidAccount(incoming(), userId);
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}
