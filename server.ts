@@ -132,6 +132,157 @@ async function startServer() {
     }
   });
 
+  app.post("/api/scan-receipt", authenticate, async (req, res) => {
+    const user = (req as any).user;
+    const { image } = req.body; // base64 image
+    
+    if (!image) return res.status(400).json({ error: 'No image provided' });
+
+    try {
+      const docConfig = await db.collection('admin').doc('llm_config').get();
+      const config = docConfig.exists ? docConfig.data() : null;
+      let apiKey = '';
+      if (config?.apiKey) {
+        try { apiKey = decrypt(config.apiKey); } catch(e) {}
+      } else {
+        apiKey = process.env.GEMINI_API_KEY || '';
+      }
+
+      if (!apiKey) return res.status(500).json({ error: 'API Key not configured' });
+
+      const openai = new OpenAI({
+         apiKey: apiKey,
+         baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+      });
+
+      const response = await openai.chat.completions.create({
+        model: 'gemini-1.5-flash',
+        messages: [
+          {
+            role: 'system',
+            content: `Tu es un expert en analyse de tickets de caisse. 
+            Analyse cette image et extrais :
+            1. Le marchand (title)
+            2. La date (format ISO)
+            3. Le montant total (total - number)
+            4. Une liste d'articles (items - array d'objets avec name et price)
+            5. Analyse de réduction : Trouve 2-3 produits spécifiques dans le ticket qu'on peut acheter moins cher ailleurs (ex: marque distributeur ou concurrent) ou dont la consommation peut être réduite. 
+            
+            Renvoie UNIQUEMENT un JSON :
+            {
+              "merchant": "string",
+              "date": "string",
+              "total": number,
+              "items": [{ "name": "string", "price": number }],
+              "analysis": "string (un résumé court des économies possibles)",
+              "suggestedChallenges": [{ "title": "string", "description": "string", "potentialSaving": number, "category": "string" }]
+            }`
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Analyse ce ticket de caisse.' },
+              { type: 'image_url', image_url: { url: image } }
+            ]
+          }
+        ],
+        response_format: { type: 'json_object' }
+      });
+
+      const result = JSON.parse(response.choices[0].message.content || '{}');
+      
+      // Update challenges in Firestore for the user if suggested
+      if (result.suggestedChallenges?.length > 0) {
+        const batch = db.batch();
+        const challengesCol = db.collection('users').doc(user.uid).collection('challenges');
+        
+        for (const ch of result.suggestedChallenges) {
+           const newDoc = challengesCol.doc();
+           batch.set(newDoc, {
+             ...ch,
+             status: 'available',
+             level: 1,
+             isAiGenerated: true,
+             progress: 0,
+             createdAt: new Date().toISOString()
+           });
+        }
+        await batch.commit();
+      }
+
+      res.json(result);
+    } catch (e) {
+      console.error("Scanning Error:", e);
+      res.status(500).json({ error: 'Failed to scan receipt' });
+    }
+  });
+
+  app.post("/api/admin/models", authenticate, verifyAdmin, async (req, res) => {
+    try {
+      const { provider, url, apiKey } = req.body;
+      
+      let actualApiKey = apiKey;
+      if (!actualApiKey || actualApiKey.includes('•') || actualApiKey === '') {
+          const doc = await db.collection('admin').doc('llm_config').get();
+          if (doc.exists && doc.data()?.apiKey) {
+              try {
+                  actualApiKey = decrypt(doc.data()!.apiKey);
+              } catch (e) {}
+          }
+      }
+
+      if (!actualApiKey) {
+         return res.status(400).json({ error: "Veuillez fournir une clé API valide." });
+      }
+
+      if (provider === 'google' && (!url || url.includes('generativelanguage'))) {
+         const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${actualApiKey}`);
+         const data = await response.json();
+         if (!response.ok) {
+            return res.status(400).json({ error: data.error?.message || "Clé API Google invalide." });
+         }
+         const models = data.models.map((m: any) => m.name.replace('models/', ''));
+         return res.json({ models });
+      }
+      
+      if (provider === 'anthropic' && !url) {
+         const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+               'x-api-key': actualApiKey,
+               'anthropic-version': '2023-06-01',
+               'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+               model: 'claude-3-haiku-20240307',
+               max_tokens: 1,
+               messages: [{role: 'user', content: 'Test'}]
+            })
+         });
+         const data = await response.json();
+         if (!response.ok) {
+            return res.status(400).json({ error: data.error?.message || "Clé API Anthropic invalide." });
+         }
+         return res.json({ models: ['claude-3-5-sonnet-20240620', 'claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307'] });
+      }
+
+      const openai = new OpenAI({
+         apiKey: actualApiKey,
+         baseURL: url || undefined
+      });
+
+      const response = await openai.models.list();
+      const models = response.data.map(m => m.id);
+      res.json({ models });
+    } catch (e: any) {
+      console.error("Failed to fetch models", e);
+      let errorMessage = e.message || 'Erreur de vérification.';
+      if (e.status === 401) errorMessage = "Clé API invalide ou non autorisée.";
+      else if (e.status === 404) errorMessage = "L'endpoint de ce fournisseur est introuvable.";
+      res.status(400).json({ error: errorMessage });
+    }
+  });
+
   app.post("/api/admin/config", authenticate, verifyAdmin, async (req, res) => {
     try {
       const { provider, url, model, apiKey, systemPrompt, isEnabled, maxTransactions, maintenanceMode, allowSignups, announcement } = req.body;

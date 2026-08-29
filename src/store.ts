@@ -47,6 +47,8 @@ export type SpendlyStore = {
   login: () => Promise<void>;
   logout: () => Promise<void>;
   loginWithMagicLink: (email: string) => Promise<void>;
+  seedMockData: () => Promise<void>;
+  scanReceipt: (base64Image: string) => Promise<any>;
   executeAiAnalysis: () => Promise<void>;
 };
 
@@ -271,6 +273,75 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
+  const seedMockData = async () => {
+    if (!fbUser) return;
+    setIsLoading(true);
+    try {
+      const userId = fbUser.uid;
+      const batch = writeBatch(db);
+
+      // 1. Clear existing transactions (optional but cleaner)
+      const currentTx = await getDocs(collection(db, 'users', userId, 'transactions'));
+      currentTx.forEach(d => batch.delete(d.ref));
+
+      // 2. Add realistic transactions
+      const mockSales = [
+        { name: 'Cora Supermarché', amount: -145.20, category: 'Nourriture', iconName: 'shopping-cart' },
+        { name: 'Starbucks Coffee', amount: -12.50, category: 'Loisirs', iconName: 'coffee' },
+        { name: 'Uber Trip', amount: -22.00, category: 'Transport', iconName: 'car' },
+        { name: 'Cora Drive', amount: -89.40, category: 'Nourriture', iconName: 'shopping-cart' },
+        { name: 'Netflix', amount: -15.99, category: 'Abos', iconName: 'play' },
+        { name: 'Spotify', amount: -9.99, category: 'Abos', iconName: 'music' },
+        { name: 'Apple.com', amount: -2.99, category: 'Abos', iconName: 'cloud' },
+        { name: 'Cora Cafétéria', amount: -18.50, category: 'Nourriture', iconName: 'utensils' },
+        { name: 'Lidl', amount: -42.10, category: 'Nourriture', iconName: 'shopping-bag' },
+        { name: 'Amazon Support', amount: -49.00, category: 'Loisirs', iconName: 'package' }
+      ];
+
+      const accId = accounts[0]?.id;
+      mockSales.forEach((s, i) => {
+        const date = new Date();
+        date.setDate(date.getDate() - i);
+        const transRef = doc(collection(db, 'users', userId, 'transactions'));
+        batch.set(transRef, {
+          ...s,
+          accountId: accId,
+          date: date.toISOString(),
+          status: 'completed'
+        });
+      });
+
+      await batch.commit();
+      // Analysis will trigger automatically via useEffect
+    } catch (e) {
+      console.error('Seeding error:', e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const scanReceipt = async (base64Image: string) => {
+    if (!fbUser) return;
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/scan-receipt', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ image: base64Image })
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+      throw new Error('Scanning failed');
+    } catch (error) {
+      console.error("Scan Error:", error);
+      throw error;
+    }
+  };
+
   useEffect(() => {
     // Check if returning from a magic link
     if (isSignInWithEmailLink(auth, window.location.href)) {
@@ -428,6 +499,8 @@ export function useSpendlyStore(): SpendlyStore {
     login,
     logout,
     loginWithMagicLink,
+    seedMockData,
+    scanReceipt,
     executeAiAnalysis
   };
 }

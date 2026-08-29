@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Tab } from './types';
 import Navigation from './components/Navigation';
@@ -20,6 +20,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('accueil');
   const store = useSpendlyStore();
   const { user, isLoading, login } = store;
+
+  // Expose store for dev/admin actions
+  useEffect(() => {
+    (window as any).spendlyStore = store;
+  }, [store]);
 
   if (isLoading) {
     return (

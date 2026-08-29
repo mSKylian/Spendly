@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Settings, Save, AlertCircle, Check, Key, Shield, Smartphone } from 'lucide-react';
+import { Settings, Save, AlertCircle, Check, Key, Shield, Smartphone, RefreshCcw, Loader2 } from 'lucide-react';
 import { auth } from '../firebase';
 
 export default function AdminPanel() {
@@ -21,6 +21,9 @@ export default function AdminPanel() {
   const [message, setMessage] = useState<{type: 'success'|'error', text: string} | null>(null);
   const [isDenied, setIsDenied] = useState(false);
   const [isEligibleForBootstrap, setIsEligibleForBootstrap] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [modelError, setModelError] = useState('');
 
   useEffect(() => {
     fetchConfig();
@@ -99,6 +102,37 @@ export default function AdminPanel() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const fetchModels = async () => {
+     setLoadingModels(true);
+     setModelError('');
+     try {
+       const token = await auth.currentUser?.getIdToken();
+       const res = await fetch('/api/admin/models', {
+         method: 'POST',
+         headers: { 
+           'Authorization': `Bearer ${token}`,
+           'Content-Type': 'application/json'
+         },
+         body: JSON.stringify({
+            provider: config.provider,
+            url: config.url,
+            apiKey: config.apiKey
+         })
+       });
+       if (res.ok) {
+          const data = await res.json();
+          setAvailableModels(data.models || []);
+       } else {
+          const err = await res.json();
+          setModelError(err.error || 'Erreur lors de la récupération');
+       }
+     } catch (e) {
+       setModelError('Erreur réseau');
+     } finally {
+       setLoadingModels(false);
+     }
   };
 
   if (loading) return null;
@@ -261,19 +295,16 @@ export default function AdminPanel() {
         </div>
 
         <div>
-           <label className="block text-xs uppercase font-bold text-secondary mb-2 ml-1">Nom du Modèle</label>
-           <input 
-             type="text" 
-             value={config.model}
-             onChange={e => setConfig({...config, model: e.target.value})}
-             placeholder="gpt-4o-mini, claude-3-haiku, llama3..."
-             className="w-full bg-surface-container p-3.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none font-mono"
-           />
-        </div>
-
-        <div>
-           <label className="block text-xs uppercase font-bold text-secondary mb-2 ml-1 flex items-center gap-1.5">
-             <Key size={14} /> Clé API (Cloud)
+           <label className="block text-xs uppercase font-bold text-secondary mb-2 ml-1 flex items-center justify-between">
+             <span className="flex items-center gap-1.5"><Key size={14} /> Clé API (Cloud)</span>
+             <button 
+               onClick={fetchModels} 
+               disabled={loadingModels}
+               className="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors disabled:opacity-50"
+             >
+                {loadingModels ? <Loader2 className="animate-spin" size={14}/> : <RefreshCcw size={14}/>}
+                Tester & Lister les modèles
+             </button>
            </label>
            <input 
              type="password" 
@@ -283,6 +314,28 @@ export default function AdminPanel() {
              className="w-full bg-surface-container p-3.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none font-mono tracking-widest"
            />
            <p className="text-[10px] uppercase font-bold text-secondary/60 mt-2 ml-1">Automatiquement chiffrée (AES-256) sur le serveur. Laisser vide si inchangée.</p>
+        </div>
+
+        <div>
+           <label className="block text-xs uppercase font-bold text-secondary mb-2 ml-1 flex justify-between items-center">
+             <span>Nom du Modèle</span>
+           </label>
+           <input 
+             type="text" 
+             list="model-list"
+             value={config.model}
+             onChange={e => setConfig({...config, model: e.target.value})}
+             placeholder="gpt-4o-mini, claude-3-haiku, llama3..."
+             className="w-full bg-surface-container p-3.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none font-mono"
+           />
+           {availableModels.length > 0 && (
+             <datalist id="model-list">
+               {availableModels.map(m => <option key={m} value={m} />)}
+             </datalist>
+           )}
+           {modelError && (
+             <p className="text-[10px] uppercase font-bold text-error mt-2 ml-1">{modelError}</p>
+           )}
         </div>
 
         <div>
@@ -323,6 +376,25 @@ export default function AdminPanel() {
             className="px-6 bg-error/10 text-error font-bold rounded-xl flex items-center justify-center hover:bg-error/20 transition-all uppercase tracking-widest text-sm"
           >
             Vider Cache IA
+          </motion.button>
+        </div>
+
+        <div className="mt-8 pt-8 border-t border-surface-container-low">
+          <h4 className="text-xs uppercase font-extrabold text-secondary mb-4 tracking-widest">Actions de Développement</h4>
+          <motion.button 
+            whileTap={{ scale: 0.98 }}
+            onClick={async () => {
+              if (confirm('Voulez-vous injecter des données de démonstration ? (Cela nettoiera vos transactions actuelles)')) {
+                const store = (window as any).spendlyStore;
+                if (store?.seedMockData) {
+                   await store.seedMockData();
+                   alert('Données injectées avec succès ! L\'IA va analyser ton nouveau profil.');
+                }
+              }
+            }}
+            className="w-full py-4 bg-secondary/10 text-secondary rounded-xl font-bold text-sm uppercase tracking-widest hover:bg-secondary/20 transition-all border border-secondary/20"
+          >
+            Générer Mock Data
           </motion.button>
         </div>
       </div>

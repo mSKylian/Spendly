@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar } from 'lucide-react';
+import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
 import { SpendlyStore } from '../store';
+import ReceiptScanner from './ReceiptScanner';
 
 interface DashboardProps {
   store: SpendlyStore;
 }
 
 export default function Dashboard({ store }: DashboardProps) {
-  const { balance, categories, transactions, user, accounts, addTransaction } = store;
+  const { balance, categories, transactions, user, accounts, addTransaction, scanReceipt } = store;
   const [showAdd, setShowAdd] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const [newTrans, setNewTrans] = useState({ name: '', amount: '', category: 'Nourriture', accountId: accounts[0]?.id || '' });
 
   const handleAdd = async (e: React.FormEvent) => {
@@ -53,12 +55,22 @@ export default function Dashboard({ store }: DashboardProps) {
                 {balance.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
               </h2>
             </div>
-            <button 
-              onClick={() => setShowAdd(true)}
-              className="w-10 h-10 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl flex items-center justify-center border border-white/20 transition-all active:scale-90"
-            >
-              <Plus size={24} />
-            </button>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setShowScanner(true)}
+                className="w-10 h-10 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl flex items-center justify-center border border-white/20 transition-all active:scale-90"
+                title="Scanner un ticket"
+              >
+                <Camera size={20} />
+              </button>
+              <button 
+                onClick={() => setShowAdd(true)}
+                className="w-10 h-10 bg-white/10 hover:bg-white/20 backdrop-blur-md rounded-xl flex items-center justify-center border border-white/20 transition-all active:scale-90"
+                title="Ajouter une dépense"
+              >
+                <Plus size={24} />
+              </button>
+            </div>
           </div>
           <div className="space-y-2">
             <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider">
@@ -167,6 +179,29 @@ export default function Dashboard({ store }: DashboardProps) {
                 </button>
               </form>
             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Receipt Scanner Modal */}
+      <AnimatePresence>
+        {showScanner && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowScanner(false)}
+              className="absolute inset-0 bg-primary/20 backdrop-blur-sm"
+            />
+            <div className="relative z-10 w-full max-w-sm">
+              <ReceiptScanner 
+                onScan={scanReceipt} 
+                onSave={addTransaction}
+                onClose={() => setShowScanner(false)} 
+                accounts={accounts}
+              />
+            </div>
           </div>
         )}
       </AnimatePresence>
