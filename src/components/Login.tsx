@@ -75,7 +75,7 @@ export default function Login({ onLogin, onEmailLogin, isLoading }: LoginProps) 
               </div>
 
               <button
-                onClick={() => setMode('email_login')}
+                onClick={() => setMode('email')}
                 className="w-full bg-white/10 hover:bg-white/20 border border-white/20 py-4 rounded-2xl font-extrabold uppercase tracking-widest transition-all flex items-center justify-center gap-3"
               >
                 <Mail size={20} /> Email

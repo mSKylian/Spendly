@@ -50,6 +50,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  // Log sanitized info only (no PII in production)
+  if (import.meta.env.DEV) {
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  } else {
+    console.error('Firestore Error:', errInfo.operationType, errInfo.path);
+  }
   throw new Error(JSON.stringify(errInfo));
 }

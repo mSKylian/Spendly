@@ -159,7 +159,7 @@ export default function Profile({ store }: ProfileProps) {
       </section>
 
       {/* Admin Panel */}
-      <AdminPanel />
+      <AdminPanel seedMockData={store.seedMockData} />
 
       {/* Saved Toast */}
       <AnimatePresence>

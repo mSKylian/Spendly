@@ -8,7 +8,7 @@ interface AccountsProps {
 }
 
 export default function Accounts({ store }: AccountsProps) {
-  const { accounts, totalAssets, addAccount, deleteAccount, addTransaction, user, upgradeToPro } = store;
+  const { accounts, totalAssets, addAccount, deleteAccount, addTransaction, user } = store;
   const [showConnect, setShowConnect] = useState(false);
   const [step, setStep] = useState<'selection' | 'connecting' | 'success' | 'upgrade'>('selection');
   const [selectedType, setSelectedType] = useState<'current' | 'paypal' | 'livret_a' | 'crypto' | null>(null);
@@ -113,8 +113,10 @@ export default function Accounts({ store }: AccountsProps) {
   };
 
   const handleUpgrade = async () => {
+    // Tier upgrades are enforced server-side (Firestore rules block client tier changes);
+    // wire this to a backend upgrade endpoint when billing exists.
     setIsUpgrading(true);
-    await upgradeToPro();
+    console.warn('Upgrade to Pro must be performed server-side; no endpoint is wired yet.');
     setIsUpgrading(false);
     setStep('selection');
   };

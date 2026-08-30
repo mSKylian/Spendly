@@ -50,7 +50,7 @@ export default function Dashboard({ store }: DashboardProps) {
         <div className="relative z-10">
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-[10px] uppercase font-bold tracking-widest opacity-80 mb-1">Bonjour {user.name}</p>
+              <p className="text-[10px] uppercase font-bold tracking-widest opacity-80 mb-1">Bonjour {user?.name}</p>
               <h2 className="font-display text-4xl font-extrabold mb-6 tracking-tight">
                 {balance.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
               </h2>
@@ -240,7 +240,7 @@ export default function Dashboard({ store }: DashboardProps) {
             <Sparkles size={12} /> Spend Coach
           </p>
           <p className="text-sm font-medium leading-relaxed text-secondary-on-container">
-            {user.insight || "J'analyse tes dépenses pour booster ton épargne..."}
+            {user?.insight || "J'analyse tes dépenses pour booster ton épargne..."}
           </p>
         </div>
         <button 

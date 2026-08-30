@@ -43,7 +43,6 @@ export type SpendlyStore = {
   addAccount: (a: Omit<Account, 'id'>) => Promise<string | void>;
   deleteAccount: (id: string) => Promise<void>;
   updateUser: (user: Partial<UserProfile>) => Promise<void>;
-  upgradeToPro: () => Promise<void>;
   login: () => Promise<void>;
   logout: () => Promise<void>;
   loginWithMagicLink: (email: string) => Promise<void>;
@@ -132,7 +131,7 @@ export function useSpendlyStore(): SpendlyStore {
         const newProfile: UserProfile = {
           name: fbUser.displayName || 'Utilisateur',
           email: fbUser.email || '',
-          avatar: fbUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${fbUser.uid}`,
+          avatar: fbUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(fbUser.displayName || fbUser.email || 'user')}`,
           balance: 1000,
           insight: 'Bienvenue sur Spendly ! Ton budget est prêt.',
           tier: 'free',
@@ -264,7 +263,7 @@ export function useSpendlyStore(): SpendlyStore {
         handleCodeInApp: true,
       };
       await sendSignInLinkToEmail(auth, email, actionCodeSettings);
-      window.localStorage.setItem('emailForSignIn', email);
+      window.sessionStorage.setItem('emailForSignIn', email);
     } catch (e) {
       console.error('Magic link error:', e);
       throw e;
@@ -345,7 +344,7 @@ export function useSpendlyStore(): SpendlyStore {
   useEffect(() => {
     // Check if returning from a magic link
     if (isSignInWithEmailLink(auth, window.location.href)) {
-      let email = window.localStorage.getItem('emailForSignIn');
+      let email = window.sessionStorage.getItem('emailForSignIn');
       if (!email) {
         email = window.prompt('Veuillez entrer votre email pour confirmer :');
       }
@@ -353,7 +352,7 @@ export function useSpendlyStore(): SpendlyStore {
         setIsLoading(true);
         signInWithEmailLink(auth, email, window.location.href)
           .then((result) => {
-            window.localStorage.removeItem('emailForSignIn');
+            window.sessionStorage.removeItem('emailForSignIn');
             // Remove the firebase params from the URL so it doesn't trigger again
             window.history.replaceState(null, '', window.location.pathname);
           })
@@ -369,16 +368,6 @@ export function useSpendlyStore(): SpendlyStore {
     const path = `users/${fbUser.uid}`;
     try {
       await updateDoc(doc(db, path), updatedUser);
-    } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, path);
-    }
-  };
-
-  const upgradeToPro = async () => {
-    if (!fbUser) return;
-    const path = `users/${fbUser.uid}`;
-    try {
-      await updateDoc(doc(db, path), { tier: 'pro' });
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, path);
     }
@@ -495,7 +484,6 @@ export function useSpendlyStore(): SpendlyStore {
     addAccount,
     deleteAccount,
     updateUser,
-    upgradeToPro,
     login,
     logout,
     loginWithMagicLink,
