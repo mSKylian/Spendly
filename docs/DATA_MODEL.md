@@ -126,3 +126,18 @@ Example files for testing live in `examples/statements/`.
    balance). Account balance and transactions come from the statement.
 3. **Add a transaction** → adjusts the owning account's balance; wallet total re-derives.
 4. **Budgets/insights/challenges** → computed from transactions; never move money.
+
+## Migrating an existing database
+
+Profiles created before this model carry a now-removed `balance` field. The updated
+`isValidUserProfile` rule rejects it, so a profile that still has `balance` cannot be
+updated until the field is removed. One-time migration per existing user:
+
+```js
+// Firebase Admin SDK (or a client update for the signed-in user)
+import { deleteField } from 'firebase/firestore';
+await updateDoc(doc(db, 'users', uid), { balance: deleteField() });
+```
+
+New users need no migration. Account/transaction changes are additive (new optional
+fields), so existing account and transaction documents remain valid.

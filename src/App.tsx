@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { motion } from 'motion/react';
 import { Tab } from './types';
 import Navigation from './components/Navigation';
 import Header from './components/Header';
@@ -55,36 +55,11 @@ export default function App() {
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'accueil':
-        return (
-          <motion.div key="accueil" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Dashboard store={store} />
-          </motion.div>
-        );
-      case 'stats':
-        return (
-          <motion.div key="stats" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Stats store={store} />
-          </motion.div>
-        );
-      case 'challenges':
-        return (
-          <motion.div key="challenges" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Challenges store={store} />
-          </motion.div>
-        );
-      case 'comptes':
-        return (
-          <motion.div key="comptes" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Accounts store={store} />
-          </motion.div>
-        );
-      case 'profil':
-        return (
-          <motion.div key="profil" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Profile store={store} />
-          </motion.div>
-        );
+      case 'accueil': return <Dashboard store={store} />;
+      case 'stats': return <Stats store={store} />;
+      case 'challenges': return <Challenges store={store} />;
+      case 'comptes': return <Accounts store={store} />;
+      case 'profil': return <Profile store={store} />;
       default:
         return (
           <div className="flex flex-col items-center justify-center h-[60vh] text-secondary">
@@ -114,17 +89,17 @@ export default function App() {
       />
       
       <main className="pt-20 px-5 max-w-lg mx-auto overflow-x-hidden">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            transition={{ duration: 0.3, ease: 'easeInOut' }}
-          >
-            {renderContent()}
-          </motion.div>
-        </AnimatePresence>
+        {/* A single keyed view that re-mounts and fades in on tab change. No
+            AnimatePresence exit-wait, which could deadlock the content swap
+            when the store re-renders mid-transition. */}
+        <motion.div
+          key={activeTab}
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.25, ease: 'easeInOut' }}
+        >
+          {renderContent()}
+        </motion.div>
       </main>
 
       <Navigation activeTab={activeTab} setActiveTab={setActiveTab} />
