@@ -58,7 +58,8 @@ async function startServer() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:"],
+        // apis.google.com + gstatic: gapi loader used by Firebase Auth signInWithPopup
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:", 'https://apis.google.com', 'https://www.gstatic.com'],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
         fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
         imgSrc: ["'self'", 'data:', 'blob:', 'https://api.dicebear.com', 'https://lh3.googleusercontent.com', 'https://*.googleusercontent.com'],
@@ -80,6 +81,7 @@ async function startServer() {
     },
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: false, // Required for Firebase Auth popup
+    crossOriginResourcePolicy: false, // Required for Safari ESM module loading
   }));
 
   // Rate limiting
