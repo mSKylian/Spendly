@@ -31,11 +31,11 @@ service cloud.firestore {
     // --- Validation Blueprints ---
 
     function isValidUserProfile(data) {
-      return data.keys().hasAll(['name', 'email', 'balance', 'limits', 'tier']) 
-        && (data.keys().size() >= 5 && data.keys().size() <= 7)
+      // No `balance`: the wallet balance is derived from accounts (see docs/DATA_MODEL.md).
+      return data.keys().hasAll(['name', 'email', 'limits', 'tier'])
+        && (data.keys().size() >= 4 && data.keys().size() <= 6)
         && data.name is string && data.name.size() > 0 && data.name.size() <= 100
         && data.email is string && data.email.size() <= 255
-        && data.balance is number && data.balance >= -1000000 && data.balance <= 10000000
         && data.tier in ['free', 'pro']
         && (!data.keys().hasAll(['insight']) || (data.insight is string && data.insight.size() <= 1000))
         && data.limits is map
@@ -49,14 +49,15 @@ service cloud.firestore {
 
     function isValidTransaction(data) {
       return data.keys().hasAll(['name', 'date', 'amount', 'category', 'iconName'])
-        && (data.keys().size() >= 5 && data.keys().size() <= 7)
+        && (data.keys().size() >= 5 && data.keys().size() <= 8)
         && data.name is string && data.name.size() <= 100
         && data.date is string && data.date.size() <= 50
         && data.amount is number && data.amount >= -100000 && data.amount <= 100000
         && data.category is string && data.category.size() <= 50
         && data.iconName is string && data.iconName.size() <= 50
         && (!data.keys().hasAll(['accountId']) || (data.accountId is string && data.accountId.size() <= 128))
-        && (!data.keys().hasAll(['status']) || data.status in ['completed', 'pending', 'failed']);
+        && (!data.keys().hasAll(['status']) || data.status in ['completed', 'pending', 'failed'])
+        && (!data.keys().hasAll(['rawLabel']) || (data.rawLabel is string && data.rawLabel.size() <= 200));
     }
 
     function isValidCategory(data) {
@@ -86,14 +87,18 @@ service cloud.firestore {
     function isValidAccount(data, userId) {
       let isPro = get(/databases/$(database)/documents/users/$(userId)).data.tier == 'pro';
       return data.keys().hasAll(['name', 'balance', 'bankName', 'type', 'iconName', 'colorClass'])
-        && (data.keys().size() >= 6 && data.keys().size() <= 8)
+        && (data.keys().size() >= 6 && data.keys().size() <= 10)
         && data.name is string && data.name.size() <= 100
         && data.balance is number && data.balance >= -1000000 && data.balance <= 10000000
         && data.bankName is string && data.bankName.size() <= 100
         && data.type in ['current', 'paypal', 'livret_a', 'crypto']
         && (data.type in ['current', 'paypal'] || isPro)
         && data.iconName in ['bank', 'wallet', 'bitcoin', 'card']
-        && data.colorClass is string && data.colorClass.size() <= 50;
+        && data.colorClass is string && data.colorClass.size() <= 50
+        && (!data.keys().hasAll(['currency']) || (data.currency is string && data.currency.size() <= 8))
+        && (!data.keys().hasAll(['openingBalance']) || (data.openingBalance is number && data.openingBalance >= -1000000 && data.openingBalance <= 10000000))
+        && (!data.keys().hasAll(['ibanLast4']) || (data.ibanLast4 is string && data.ibanLast4.size() <= 4))
+        && (!data.keys().hasAll(['source']) || data.source in ['manual', 'import']);
     }
 
     // --- Match Rules ---
