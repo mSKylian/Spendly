@@ -41,33 +41,48 @@ Les clés API cloud sont chiffrées en **AES-256** côté serveur. Les modèles 
 
 ```bash
 # Cloner le repo
-git clone https://github.com/ton-username/spendly.git
-cd spendly
+git clone https://github.com/mSKylian/Spendly.git
+cd Spendly
 
 # Installer les dépendances
 npm install
 
-# Configurer les variables d'environnement
+# Configurer Firebase (client) — ce fichier n'est PAS versionné
+cp firebase-applet-config.example.json firebase-applet-config.json
+# Remplis les valeurs depuis la console Firebase :
+# Paramètres du projet > Vos applications > Application Web > Configuration
+
+# Configurer les variables d'environnement du serveur
 cp .env.example .env
-# Remplis les valeurs dans .env
+# Génère une clé de chiffrement et renseigne-la dans .env (voir ci-dessous)
 
 # Lancer en développement
 npm run dev
 ```
 
-## 🔑 Variables d'environnement
+Le serveur démarre sur `http://localhost:3000` (client Vite + API Express).
 
-```env
-VITE_FIREBASE_API_KEY=
-VITE_FIREBASE_AUTH_DOMAIN=
-VITE_FIREBASE_PROJECT_ID=
-VITE_FIREBASE_STORAGE_BUCKET=
-VITE_FIREBASE_MESSAGING_SENDER_ID=
-VITE_FIREBASE_APP_ID=
-SERVER_ENCRYPTION_KEY=
-NORDIGEN_SECRET_ID=
-NORDIGEN_SECRET_KEY=
-```
+## 🔥 Configuration Firebase
+
+La config Firebase du client vit dans `firebase-applet-config.json` (à la racine).
+Ce fichier est **ignoré par Git** — copie `firebase-applet-config.example.json` et
+renseigne les valeurs de ton projet. Dans la console Firebase, active aussi :
+
+- **Authentication** → fournisseurs *Google* et *E-mail/Lien e-mail (sans mot de passe)*
+- **Firestore** → base de données, puis publie les règles depuis `firestore.rules`
+
+> Les clés d'une config Firebase Web sont publiques par nature ; la sécurité repose
+> sur les règles Firestore (`firestore.rules`), pas sur le secret de ces clés.
+
+## 🔑 Variables d'environnement (serveur)
+
+Renseignées dans `.env` (voir `.env.example`) :
+
+| Variable | Requis | Description |
+|---|---|---|
+| `SERVER_ENCRYPTION_KEY` | ✅ | Chiffre au repos la clé API LLM de l'admin. **≥ 64 caractères hex** — le serveur refuse de démarrer sinon. Génère-la avec `openssl rand -hex 32`. |
+| `GEMINI_API_KEY` | ⚪️ | Clé Gemini utilisée en repli quand aucun fournisseur n'est configuré dans le panneau admin. |
+| `APP_URL` | ⚪️ | URL publique de l'applet (liens auto-référencés). Par défaut `http://localhost:3000`. |
 
 ## 📱 Captures d'écran
 
