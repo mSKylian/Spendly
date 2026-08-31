@@ -58,15 +58,28 @@ async function startServer() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // needed for React
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'", 'data:', 'https://api.dicebear.com', 'https://lh3.googleusercontent.com'],
-        connectSrc: ["'self'", 'https://*.googleapis.com', 'https://*.firebaseapp.com', 'https://*.firebaseio.com', 'https://api.openai.com', 'https://api.anthropic.com', 'https://openrouter.ai'],
-        frameSrc: ["'none'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https://api.dicebear.com', 'https://lh3.googleusercontent.com', 'https://*.googleusercontent.com'],
+        connectSrc: [
+          "'self'", 
+          'ws:', 
+          'wss:', 
+          'http://localhost:*',
+          'https://*.googleapis.com', 
+          'https://*.firebaseapp.com', 
+          'https://*.firebaseio.com', 
+          'https://api.openai.com', 
+          'https://api.anthropic.com', 
+          'https://openrouter.ai'
+        ],
+        frameSrc: ["'self'", 'https://*.firebaseapp.com', 'https://accounts.google.com'],
         objectSrc: ["'none'"],
       }
     },
-    crossOriginEmbedderPolicy: false, // Firebase SDK compatibility
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false, // Required for Firebase Auth popup
   }));
 
   // Rate limiting
