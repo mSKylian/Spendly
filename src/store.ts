@@ -131,7 +131,7 @@ export function useSpendlyStore(): SpendlyStore {
         const newProfile: UserProfile = {
           name: fbUser.displayName || 'Utilisateur',
           email: fbUser.email || '',
-          avatar: fbUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(fbUser.displayName || fbUser.email || 'user')}`,
+          avatar: fbUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${fbUser.uid}`,
           balance: 1000,
           insight: 'Bienvenue sur Spendly ! Ton budget est prêt.',
           tier: 'free',
@@ -244,6 +244,7 @@ export function useSpendlyStore(): SpendlyStore {
       await signInWithPopup(auth, provider);
     } catch (e) {
       console.error('Login error:', e);
+      throw e;
     }
   };
 

@@ -100,7 +100,8 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidUserProfile(incoming());
+      allow create: if isOwner(userId) && isValidUserProfile(incoming())
+        && incoming().tier == 'free';  // New profiles are always free; pro is granted server-side only
       allow update: if isOwner(userId) && isValidUserProfile(incoming())
         && incoming().tier == existing().tier;  // Tier can only be changed server-side
 
