@@ -27,7 +27,7 @@ import {
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement } from './types';
 import { analyzeSpending } from './services/geminiService';
-import { toISODate } from './lib/finance';
+import { toISODate, guessCategory } from './lib/finance';
 
 export type SpendlyStore = {
   balance: number; // derived: sum of account balances (== totalAssets)
@@ -292,7 +292,12 @@ export function useSpendlyStore(): SpendlyStore {
       txSnap.forEach(d => batch.delete(d.ref));
       accSnap.forEach(d => batch.delete(d.ref));
 
-      const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString();
+      // Spread transactions over recent days but keep them within the current
+      // calendar month, so the (monthly) dashboard always shows seeded data.
+      const monthStart = new Date();
+      monthStart.setHours(0, 0, 0, 0);
+      monthStart.setDate(1);
+      const daysAgo = (n: number) => new Date(Math.max(Date.now() - n * 86400000, monthStart.getTime())).toISOString();
 
       // 2. Mock statements: each account's balance is derived from its transactions.
       const statements = [
@@ -378,10 +383,15 @@ export function useSpendlyStore(): SpendlyStore {
       for (const t of parsed.transactions.slice(0, 480)) {
         const txRef = doc(collection(db, 'users', userId, 'transactions'));
         const label = (t.label || 'Transaction').slice(0, 100);
+        // Income keeps 'Revenus'; expenses are auto-categorized from the label so
+        // imported spend lands in real budget categories, not a catch-all.
+        const category = t.category
+          ? t.category.slice(0, 50)
+          : (t.amount >= 0 ? 'Revenus' : guessCategory(label));
         batch.set(txRef, {
           name: label,
           amount: clampAmount(t.amount),
-          category: (t.category || 'Autre').slice(0, 50),
+          category,
           iconName: t.amount >= 0 ? 'zap' : 'shopping-cart',
           date: toISODate(t.date),
           status: 'completed',

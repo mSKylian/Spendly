@@ -86,6 +86,11 @@ Computed by `src/lib/finance.ts` — never stored, so pages cannot disagree:
 - `totalAssets` = Σ account balances → the wallet/main balance.
 - category spend, period totals, budget "used %" → from transactions within the period.
 
+Periods are **calendar-bounded** half-open windows `[start, end)` (Mon-week / 1st-of-month
+/ Jan-1 to the next one), so transactions from other months — or future-dated ones — never
+leak into the current period. The category breakdown is derived from every category present
+in the period's transactions, so it always sums to the period total.
+
 ## Statement import
 
 The bank-onboarding flow imports a statement file and creates one account plus its
@@ -115,6 +120,9 @@ interface ParsedStatement {
   which returns the same `ParsedStatement` shape.
 - After preview + confirm, the importer creates the account (`balance = closingBalance`,
   `source = 'import'`) and writes each transaction with its `accountId` and `rawLabel`.
+- Expense transactions without a category are auto-categorized from their label
+  (`guessCategory` in `src/lib/finance.ts`) into a budget category, falling back to `Autre`;
+  credits default to `Revenus`.
 
 Example files for testing live in `examples/statements/`.
 
