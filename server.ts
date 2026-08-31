@@ -6,20 +6,32 @@ import 'dotenv/config';
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
-import fs from "fs";
 import OpenAI from "openai";
+import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
 
-// Initialize Firebase Admin
+
+// Initialize Firebase Admin from environment variables (see .env.example)
 let db: FirebaseFirestore.Firestore;
 try {
-  const accountConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
-  const app = initializeApp({ projectId: accountConfig.projectId });
-  db = getFirestore(app, accountConfig.firestoreDatabaseId);
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+  if (!projectId) {
+    throw new Error('VITE_FIREBASE_PROJECT_ID is not set');
+  }
+  const databaseId = process.env.VITE_FIREBASE_DATABASE_ID;
+  const app = initializeApp({ projectId });
+  db = databaseId && databaseId !== '(default)'
+    ? getFirestore(app, databaseId)
+    : getFirestore(app);
 } catch (e) {
   console.error("Failed to initialize Firebase Admin", e);
 }
 
-const ENCRYPTION_KEY = process.env.SERVER_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+const SERVER_ENCRYPTION_KEY_ENV = process.env.SERVER_ENCRYPTION_KEY;
+if (!SERVER_ENCRYPTION_KEY_ENV || SERVER_ENCRYPTION_KEY_ENV.length < 64) {
+  throw new Error('[Spendly] SERVER_ENCRYPTION_KEY env var is required and must be at least 64 hex characters. Set it before starting the server.');
+}
+const ENCRYPTION_KEY = SERVER_ENCRYPTION_KEY_ENV;
 const IV_LENGTH = 16;
 
 function encrypt(text: string): string {
@@ -45,6 +57,56 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Security headers
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        // apis.google.com + gstatic: gapi loader used by Firebase Auth signInWithPopup
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:", 'https://apis.google.com', 'https://www.gstatic.com'],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https://api.dicebear.com', 'https://lh3.googleusercontent.com', 'https://*.googleusercontent.com'],
+        connectSrc: [
+          "'self'", 
+          'ws:', 
+          'wss:', 
+          'http://localhost:*',
+          'https://*.googleapis.com', 
+          'https://*.firebaseapp.com', 
+          'https://*.firebaseio.com', 
+          'https://api.openai.com', 
+          'https://api.anthropic.com', 
+          'https://openrouter.ai'
+        ],
+        frameSrc: ["'self'", 'https://*.firebaseapp.com', 'https://accounts.google.com'],
+        objectSrc: ["'none'"],
+      }
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false, // Required for Firebase Auth popup
+    crossOriginResourcePolicy: false, // Required for Safari ESM module loading
+  }));
+
+  // Rate limiting
+  const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' }
+  });
+
+  const llmLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many AI requests. Please wait before retrying.' }
+  });
+
+  app.use('/api/', generalLimiter);
 
   // Middleware to authenticate
   const authenticate = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -77,20 +139,6 @@ async function startServer() {
     }
   };
 
-  app.post("/api/admin/bootstrap", authenticate, async (req, res) => {
-    const user = (req as any).user;
-    const ADMIN_EMAILS = ['kylian.allaoui@gmail.com', 'admin@spendly.com', 'kylian.allaoui@icloud.com', 'allaoui.zouhair@gmail.com'];
-    if (ADMIN_EMAILS.includes(user.email)) {
-      try {
-        await db.collection('admins').doc(user.uid).set({ role: 'admin' });
-        res.json({ success: true });
-      } catch (e) {
-        res.status(500).json({ error: 'Failed to bootstrap admin' });
-      }
-    } else {
-      res.status(403).json({ error: 'Not eligible for admin bootstrap' });
-    }
-  });
 
   // API Routes
   app.get("/api/admin/config", authenticate, verifyAdmin, async (req, res) => {
@@ -132,11 +180,22 @@ async function startServer() {
     }
   });
 
-  app.post("/api/scan-receipt", authenticate, async (req, res) => {
+  app.post("/api/scan-receipt", authenticate, llmLimiter, async (req, res) => {
     const user = (req as any).user;
     const { image } = req.body; // base64 image
     
     if (!image) return res.status(400).json({ error: 'No image provided' });
+    // Validate image is a proper base64 data URI with an accepted MIME type
+    const validDataUriPattern = /^data:image\/(jpeg|png|webp|gif);base64,/;
+    if (!validDataUriPattern.test(image)) {
+      return res.status(400).json({ error: 'Invalid image format. Must be a base64 data URI (jpeg, png, webp, or gif).' });
+    }
+    const base64Data = image.split(',')[1] || '';
+    const imageSizeBytes = Buffer.from(base64Data, 'base64').length;
+    const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
+    if (imageSizeBytes > MAX_IMAGE_SIZE) {
+      return res.status(400).json({ error: 'Image is too large. Maximum size is 5 MB.' });
+    }
 
     try {
       const docConfig = await db.collection('admin').doc('llm_config').get();
@@ -266,9 +325,32 @@ async function startServer() {
          return res.json({ models: ['claude-3-5-sonnet-20240620', 'claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307'] });
       }
 
+      const ALLOWED_BASE_URL_HOSTS_M = [
+        'generativelanguage.googleapis.com',
+        'api.openai.com',
+        'api.anthropic.com',
+        'openrouter.ai',
+        'localhost',
+        '127.0.0.1',
+      ];
+      let validatedUrl: string | undefined = undefined;
+      if (url) {
+        try {
+          const parsedUrl = new URL(url);
+          if (parsedUrl.protocol !== 'https:' && parsedUrl.hostname !== 'localhost' && parsedUrl.hostname !== '127.0.0.1') {
+            return res.status(400).json({ error: 'Custom URL must use HTTPS.' });
+          }
+          if (!ALLOWED_BASE_URL_HOSTS_M.some(h => parsedUrl.hostname === h || parsedUrl.hostname.endsWith('.' + h))) {
+            return res.status(400).json({ error: `URL host is not in the allowlist.` });
+          }
+          validatedUrl = url;
+        } catch (e) {
+          return res.status(400).json({ error: 'Invalid URL format.' });
+        }
+      }
       const openai = new OpenAI({
          apiKey: actualApiKey,
-         baseURL: url || undefined
+         baseURL: validatedUrl || undefined
       });
 
       const response = await openai.models.list();
@@ -308,9 +390,17 @@ async function startServer() {
     }
   });
 
-  app.post("/api/analyze", authenticate, async (req, res) => {
+  app.post("/api/analyze", authenticate, llmLimiter, async (req, res) => {
     const user = (req as any).user;
-    let { transactionsHash, transactions } = req.body;
+    let { transactions } = req.body;
+    // Compute hash server-side from the actual submitted data
+    const hashStr = JSON.stringify((transactions || []).map((t: any) => `${t.name}:${t.amount}`));
+    let hashVal = 0;
+    for (let i = 0; i < hashStr.length; i++) {
+      hashVal = (hashVal << 5) - hashVal + hashStr.charCodeAt(i);
+      hashVal |= 0;
+    }
+    const transactionsHash = hashVal.toString();
     
     try {
       // 2. Fetch config
@@ -342,12 +432,37 @@ async function startServer() {
 
       const systemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
       const provider = (config?.provider || 'openai').toLowerCase();
-      let baseURL = config?.url || undefined;
+      const ALLOWED_BASE_URL_HOSTS = [
+        'generativelanguage.googleapis.com',
+        'api.openai.com',
+        'api.anthropic.com',
+        'openrouter.ai',
+        'localhost',
+        '127.0.0.1',
+      ];
+      let rawBaseURL = config?.url || undefined;
+      let baseURL: string | undefined = undefined;
+      if (rawBaseURL) {
+        try {
+          const parsedURL = new URL(rawBaseURL);
+          if (parsedURL.protocol !== 'https:' && parsedURL.hostname !== 'localhost' && parsedURL.hostname !== '127.0.0.1') {
+            throw new Error('baseURL must use HTTPS');
+          }
+          if (!ALLOWED_BASE_URL_HOSTS.some(h => parsedURL.hostname === h || parsedURL.hostname.endsWith('.' + h))) {
+            throw new Error(`baseURL host '${parsedURL.hostname}' is not in the allowlist`);
+          }
+          baseURL = rawBaseURL;
+        } catch (urlError: any) {
+          console.warn('Invalid or disallowed baseURL in config:', urlError.message);
+          baseURL = undefined;
+        }
+      }
       const model = config?.model || 'gpt-4o-mini';
 
       if (provider === 'google' && !baseURL) {
          baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
       }
+
 
       let insight = "Analyse terminée";
       let newChallenges = [];

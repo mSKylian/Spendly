@@ -14,6 +14,30 @@ export default function Login({ onLogin, onEmailLogin, isLoading }: LoginProps) 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
+  const [googleLoading, setGoogleLoading] = useState(false);
+
+  const handleGoogleLogin = async () => {
+    setError('');
+    setGoogleLoading(true);
+    try {
+      await onLogin();
+    } catch (err: any) {
+      let msg = err.message || 'Erreur de connexion avec Google.';
+      if (err.code === 'auth/unauthorized-domain') {
+        msg = "Domaine non autorisé dans Firebase Console (ajoutez 'localhost' dans Authentication > Paramètres > Domaines autorisés).";
+      } else if (err.code === 'auth/popup-closed-by-user') {
+        msg = "La fenêtre de connexion Google a été fermée.";
+      } else if (err.code === 'auth/popup-blocked') {
+        msg = "La popup de connexion a été bloquée par votre navigateur. Autorisez les popups pour ce site.";
+      } else if (err.code === 'auth/operation-not-allowed') {
+        msg = "Le fournisseur Google n'est pas activé dans votre console Firebase (Authentication > Sign-in method).";
+      }
+      setError(msg);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
   const handleEmailAction = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -61,12 +85,18 @@ export default function Login({ onLogin, onEmailLogin, isLoading }: LoginProps) 
               className="space-y-4"
             >
               <button
-                onClick={onLogin}
-                disabled={isLoading}
+                onClick={handleGoogleLogin}
+                disabled={isLoading || googleLoading}
                 className="w-full bg-white text-primary py-4 rounded-2xl font-extrabold uppercase tracking-widest shadow-xl flex items-center justify-center gap-3 transition-all hover:bg-opacity-95 disabled:opacity-50"
               >
-                {isLoading ? <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" /> : <><LogIn size={20} /> Google</>}
+                {isLoading || googleLoading ? <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" /> : <><LogIn size={20} /> Google</>}
               </button>
+              
+              {error && (
+                <div className="p-3 bg-red-500/20 border border-red-400/30 rounded-xl text-xs font-semibold text-red-100 text-left leading-relaxed">
+                  {error}
+                </div>
+              )}
               
               <div className="flex items-center gap-4 my-6 opacity-30">
                 <div className="h-px flex-1 bg-white" />
@@ -75,7 +105,7 @@ export default function Login({ onLogin, onEmailLogin, isLoading }: LoginProps) 
               </div>
 
               <button
-                onClick={() => setMode('email_login')}
+                onClick={() => { setMode('email'); setError(''); }}
                 className="w-full bg-white/10 hover:bg-white/20 border border-white/20 py-4 rounded-2xl font-extrabold uppercase tracking-widest transition-all flex items-center justify-center gap-3"
               >
                 <Mail size={20} /> Email

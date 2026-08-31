@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Settings, Save, AlertCircle, Check, Key, Shield, Smartphone, RefreshCcw, Loader2 } from 'lucide-react';
+import { Settings, Save, AlertCircle, Check, Key, Smartphone, RefreshCcw, Loader2 } from 'lucide-react';
 import { auth } from '../firebase';
 
-export default function AdminPanel() {
+export default function AdminPanel({ seedMockData }: { seedMockData?: () => Promise<void> }) {
   const [config, setConfig] = useState<any>({
     isEnabled: true,
     provider: 'openai',
@@ -20,7 +20,6 @@ export default function AdminPanel() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{type: 'success'|'error', text: string} | null>(null);
   const [isDenied, setIsDenied] = useState(false);
-  const [isEligibleForBootstrap, setIsEligibleForBootstrap] = useState(false);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState('');
@@ -34,12 +33,6 @@ export default function AdminPanel() {
       const user = auth.currentUser;
       if (!user) return;
       
-      const email = user.email || '';
-      const ADMIN_EMAILS = ['kylian.allaoui@gmail.com', 'admin@spendly.com', 'kylian.allaoui@icloud.com', 'allaoui.zouhair@gmail.com'];
-      if (ADMIN_EMAILS.includes(email)) {
-         setIsEligibleForBootstrap(true);
-      }
-
       const token = await user.getIdToken();
       const res = await fetch('/api/admin/config', {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -59,22 +52,6 @@ export default function AdminPanel() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleBootstrap = async () => {
-     try {
-        const token = await auth.currentUser?.getIdToken();
-        const res = await fetch('/api/admin/bootstrap', {
-           method: 'POST',
-           headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (res.ok) {
-           setIsDenied(false);
-           fetchConfig();
-        }
-     } catch (e) {
-        console.error(e);
-     }
   };
 
   const handleSave = async () => {
@@ -138,24 +115,9 @@ export default function AdminPanel() {
   if (loading) return null;
 
   if (isDenied) {
-     if (isEligibleForBootstrap) {
-        return (
-           <div className="bg-surface-container-lowest rounded-2xl p-6 shadow-sm border border-white mt-8 text-center flex flex-col gap-4">
-              <div className="w-16 h-16 bg-primary/10 text-primary mx-auto rounded-full flex items-center justify-center">
-                 <Shield size={32} />
-              </div>
-              <div>
-                <h3 className="font-display font-extrabold text-lg">Mode Développeur</h3>
-                <p className="text-secondary text-sm">Puisque tu es le développeur, tu peux t'octroyer les droits administrateur.</p>
-              </div>
-              <button onClick={handleBootstrap} className="bg-primary text-on-primary py-3 px-6 rounded-xl font-bold hover:bg-primary/90 transition-all mx-auto">
-                 Devenir Administrateur
-              </button>
-           </div>
-        );
-     }
      return null;
   }
+
 
   return (
     <div className="py-8">
@@ -385,9 +347,8 @@ export default function AdminPanel() {
             whileTap={{ scale: 0.98 }}
             onClick={async () => {
               if (confirm('Voulez-vous injecter des données de démonstration ? (Cela nettoiera vos transactions actuelles)')) {
-                const store = (window as any).spendlyStore;
-                if (store?.seedMockData) {
-                   await store.seedMockData();
+                if (seedMockData) {
+                   await seedMockData();
                    alert('Données injectées avec succès ! L\'IA va analyser ton nouveau profil.');
                 }
               }

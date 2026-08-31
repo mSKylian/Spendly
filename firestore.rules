@@ -35,7 +35,7 @@ service cloud.firestore {
         && (data.keys().size() >= 5 && data.keys().size() <= 7)
         && data.name is string && data.name.size() > 0 && data.name.size() <= 100
         && data.email is string && data.email.size() <= 255
-        && data.balance is number
+        && data.balance is number && data.balance >= -1000000 && data.balance <= 10000000
         && data.tier in ['free', 'pro']
         && (!data.keys().hasAll(['insight']) || (data.insight is string && data.insight.size() <= 1000))
         && data.limits is map
@@ -52,10 +52,11 @@ service cloud.firestore {
         && (data.keys().size() >= 5 && data.keys().size() <= 7)
         && data.name is string && data.name.size() <= 100
         && data.date is string && data.date.size() <= 50
-        && data.amount is number
+        && data.amount is number && data.amount >= -100000 && data.amount <= 100000
         && data.category is string && data.category.size() <= 50
         && data.iconName is string && data.iconName.size() <= 50
-        && (!data.keys().hasAll(['accountId']) || (data.accountId is string && data.accountId.size() <= 128));
+        && (!data.keys().hasAll(['accountId']) || (data.accountId is string && data.accountId.size() <= 128))
+        && (!data.keys().hasAll(['status']) || data.status in ['completed', 'pending', 'failed']);
     }
 
     function isValidCategory(data) {
@@ -87,7 +88,7 @@ service cloud.firestore {
       return data.keys().hasAll(['name', 'balance', 'bankName', 'type', 'iconName', 'colorClass'])
         && (data.keys().size() >= 6 && data.keys().size() <= 8)
         && data.name is string && data.name.size() <= 100
-        && data.balance is number
+        && data.balance is number && data.balance >= -1000000 && data.balance <= 10000000
         && data.bankName is string && data.bankName.size() <= 100
         && data.type in ['current', 'paypal', 'livret_a', 'crypto']
         && (data.type in ['current', 'paypal'] || isPro)
@@ -99,8 +100,10 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if isOwner(userId);
-      allow create: if isOwner(userId) && isValidUserProfile(incoming());
-      allow update: if isOwner(userId) && isValidUserProfile(incoming());
+      allow create: if isOwner(userId) && isValidUserProfile(incoming())
+        && incoming().tier == 'free';  // New profiles are always free; pro is granted server-side only
+      allow update: if isOwner(userId) && isValidUserProfile(incoming())
+        && incoming().tier == existing().tier;  // Tier can only be changed server-side
 
       match /transactions/{transactionId} {
         allow list, get: if isOwner(userId);

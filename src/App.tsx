@@ -21,9 +21,11 @@ export default function App() {
   const store = useSpendlyStore();
   const { user, isLoading, login } = store;
 
-  // Expose store for dev/admin actions
+  // Expose store for dev/admin actions (development only)
   useEffect(() => {
-    (window as any).spendlyStore = store;
+    if (import.meta.env.DEV) {
+      (window as any).spendlyStore = store;
+    }
   }, [store]);
 
   if (isLoading) {
