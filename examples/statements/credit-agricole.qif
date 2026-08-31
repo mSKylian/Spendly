@@ -1,0 +1,41 @@
+!Type:Bank
+D11/02/2026
+T-40.10
+PCarrefour Drive
+MCourses alimentaires
+^
+D11/05/2026
+T1900.00
+PVirement Salaire
+MSalaire mensuel employeur
+^
+D11/07/2026
+T-65.00
+PEDF Electricite
+MFacture energie
+^
+D11/10/2026
+T-19.99
+PFree Mobile
+MAbonnement telephone
+^
+D11/14/2026
+T-700.00
+PLoyer Appartement
+MVirement SEPA loyer
+^
+D11/18/2026
+T-13.49
+PNetflix
+MAbonnement streaming
+^
+D11/22/2026
+T-28.75
+PCarrefour City
+MCourses alimentaires
+^
+D11/29/2026
+T50.00
+PVirement Remboursement Ami
+MRemboursement restaurant partage
+^

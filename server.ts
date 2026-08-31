@@ -276,6 +276,119 @@ async function startServer() {
     }
   });
 
+  app.post("/api/parse-statement", authenticate, llmLimiter, async (req, res) => {
+    const { file, mimeType } = req.body; // base64 data URI + declared mime type
+
+    if (!file || typeof file !== 'string') return res.status(400).json({ error: 'No file provided' });
+
+    const validDataUriPattern = /^data:(application\/pdf|image\/(jpeg|png|webp|gif));base64,/;
+    const uriMatch = file.match(validDataUriPattern);
+    if (!uriMatch) {
+      return res.status(400).json({ error: 'Invalid file format. Must be a base64 data URI (application/pdf or image jpeg/png/webp/gif).' });
+    }
+    const actualMimeType = uriMatch[1];
+    if (mimeType && typeof mimeType === 'string' && mimeType !== actualMimeType) {
+      return res.status(400).json({ error: 'Declared mimeType does not match file content.' });
+    }
+
+    const base64Data = file.split(',')[1] || '';
+    const fileSizeBytes = Buffer.from(base64Data, 'base64').length;
+    const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+    if (fileSizeBytes > MAX_FILE_SIZE) {
+      return res.status(400).json({ error: 'File is too large. Maximum size is 5 MB.' });
+    }
+
+    try {
+      const docConfig = await db.collection('admin').doc('llm_config').get();
+      const config = docConfig.exists ? docConfig.data() : null;
+      let apiKey = '';
+      if (config?.apiKey) {
+        try { apiKey = decrypt(config.apiKey); } catch (e) {}
+      } else {
+        apiKey = process.env.GEMINI_API_KEY || '';
+      }
+
+      if (!apiKey) return res.status(500).json({ error: 'API Key not configured' });
+
+      const openai = new OpenAI({
+        apiKey: apiKey,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/'
+      });
+
+      const response = await openai.chat.completions.create({
+        model: 'gemini-1.5-flash',
+        messages: [
+          {
+            role: 'system',
+            content: `Tu es un expert en analyse de relevés bancaires.
+            Analyse ce document (relevé bancaire, PDF ou image) et extrais toutes les transactions ainsi que les informations du compte.
+
+            Renvoie UNIQUEMENT un JSON avec cette forme exacte :
+            {
+              "account": {
+                "name": "string",
+                "bankName": "string",
+                "currency": "string (code ISO 4217, ex: EUR)",
+                "ibanLast4": "string (4 derniers chiffres, optionnel)",
+                "openingBalance": number (optionnel),
+                "closingBalance": number
+              },
+              "transactions": [
+                { "date": "string (ISO 8601, YYYY-MM-DD)", "label": "string", "amount": number (signé: négatif = débit, positif = crédit), "category": "string (optionnel)" }
+              ]
+            }
+
+            Règles :
+            - Les montants sont signés : débit/dépense = négatif, crédit/revenu = positif.
+            - Les dates doivent être au format ISO 8601 (YYYY-MM-DD).
+            - Si le solde de clôture n'est pas visible, calcule-le comme la somme des montants des transactions.
+            - Ne renvoie aucun texte en dehors du JSON.`
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Analyse ce relevé bancaire et extrais les transactions.' },
+              { type: 'image_url', image_url: { url: file } }
+            ]
+          }
+        ],
+        response_format: { type: 'json_object' }
+      });
+
+      const result = JSON.parse(response.choices[0].message.content || '{}');
+
+      if (!result || !result.account || !Array.isArray(result.transactions)) {
+        return res.status(502).json({ error: 'Failed to extract a valid statement from the document.' });
+      }
+
+      const parsed = {
+        account: {
+          name: String(result.account.name || 'Relevé importé'),
+          bankName: String(result.account.bankName || 'Relevé importé'),
+          currency: String(result.account.currency || 'EUR'),
+          ibanLast4: result.account.ibanLast4 ? String(result.account.ibanLast4).slice(-4) : undefined,
+          openingBalance: typeof result.account.openingBalance === 'number' ? result.account.openingBalance : undefined,
+          closingBalance: typeof result.account.closingBalance === 'number'
+            ? result.account.closingBalance
+            : result.transactions.reduce((sum: number, t: any) => sum + (typeof t.amount === 'number' ? t.amount : 0), 0),
+        },
+        transactions: result.transactions
+          .filter((t: any) => t && typeof t.date === 'string' && typeof t.amount === 'number')
+          .map((t: any) => ({
+            date: t.date,
+            label: typeof t.label === 'string' && t.label ? t.label : 'Transaction',
+            amount: t.amount,
+            category: typeof t.category === 'string' ? t.category : undefined,
+          })),
+      };
+
+      res.json(parsed);
+    } catch (e) {
+      console.error("Statement parsing error:", e);
+      res.status(500).json({ error: 'Failed to parse statement' });
+    }
+  });
+
   app.post("/api/admin/models", authenticate, verifyAdmin, async (req, res) => {
     try {
       const { provider, url, apiKey } = req.body;

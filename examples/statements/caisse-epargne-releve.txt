@@ -1,0 +1,29 @@
+CAISSE D'EPARGNE ILE-DE-FRANCE
+RELEVE DE COMPTE
+
+Titulaire        : M. DURAND JEAN
+Compte           : Livret Compte Courant
+IBAN             : FR76 XXXX XXXX XXXX XXXX XXXX 234
+BIC              : CEPAFRPP751
+
+Periode du releve : 01/11/2026 au 30/11/2026
+
+Solde au 01/11/2026 :             5 120,75 EUR
+
+Date         Libelle                                Debit        Credit
+----------------------------------------------------------------------
+02/11/2026   VIREMENT SALAIRE SOCIETE XYZ                       2 350,00
+03/11/2026   CARREFOUR CITY CB                        47,60
+05/11/2026   SNCF TGV INOUI                            95,00
+08/11/2026   EDF FACTURE                              102,30
+10/11/2026   FREE MOBILE                               19,99
+12/11/2026   NETFLIX.COM                               13,49
+15/11/2026   PHARMACIE SAINT MICHEL                    18,20
+18/11/2026   LOYER VIR SEPA                            890,00
+21/11/2026   AMAZON.FR                                  33,90
+24/11/2026   RETRAIT DISTRIBUTEUR                      120,00
+27/11/2026   ASSURANCE HABITATION MAAF                  45,60
+29/11/2026   VIREMENT REMBOURSEMENT CAF                            180,00
+----------------------------------------------------------------------
+
+Solde au 30/11/2026 :             6 264,67 EUR
