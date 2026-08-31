@@ -47,14 +47,9 @@ cd Spendly
 # Installer les dépendances
 npm install
 
-# Configurer Firebase (client) — ce fichier n'est PAS versionné
-cp firebase-applet-config.example.json firebase-applet-config.json
-# Remplis les valeurs depuis la console Firebase :
-# Paramètres du projet > Vos applications > Application Web > Configuration
-
-# Configurer les variables d'environnement du serveur
+# Configurer l'environnement (Firebase + serveur) — voir ci-dessous
 cp .env.example .env
-# Génère une clé de chiffrement et renseigne-la dans .env (voir ci-dessous)
+# Renseigne les valeurs dans .env
 
 # Lancer en développement
 npm run dev
@@ -62,27 +57,61 @@ npm run dev
 
 Le serveur démarre sur `http://localhost:3000` (client Vite + API Express).
 
+Toute la configuration — Firebase **et** serveur — vit désormais dans un seul
+fichier `.env` (voir `.env.example`). Il n'y a plus de fichier
+`firebase-applet-config.json` séparé.
+
 ## 🔥 Configuration Firebase
 
-La config Firebase du client vit dans `firebase-applet-config.json` (à la racine).
-Ce fichier est **ignoré par Git** — copie `firebase-applet-config.example.json` et
-renseigne les valeurs de ton projet. Dans la console Firebase, active aussi :
+### Option A — Script automatisé (nouveaux déploiements)
 
-- **Authentication** → fournisseurs *Google* et *E-mail/Lien e-mail (sans mot de passe)*
-- **Firestore** → base de données, puis publie les règles depuis `firestore.rules`
+```bash
+# Provisionne un projet, déploie les règles et génère le .env
+./scripts/setup-firebase.sh <project-id> --create
+```
+
+Le script (basé sur `firebase-tools`) crée le projet, enregistre l'app Web,
+crée la base Firestore, déploie `firestore.rules` et écrit ton `.env`. Il reste
+**une étape manuelle** (non exposée par la CLI Firebase) : dans la console,
+**Authentication → Sign-in method**, active *Google* et *E-mail/Lien e-mail
+(sans mot de passe)*.
+
+### Option B — Manuelle
+
+Récupère les valeurs dans la console Firebase (*Paramètres du projet > Vos
+applications > Application Web > Configuration*) et renseigne les variables
+`VITE_FIREBASE_*` de ton `.env`. Puis, dans la console :
+
+- **Authentication** → active *Google* et *E-mail/Lien e-mail (sans mot de passe)*
+- **Firestore** → crée la base, puis déploie les règles :
+
+```bash
+npx firebase-tools deploy --only firestore:rules --project <project-id>
+```
 
 > Les clés d'une config Firebase Web sont publiques par nature ; la sécurité repose
 > sur les règles Firestore (`firestore.rules`), pas sur le secret de ces clés.
 
-## 🔑 Variables d'environnement (serveur)
+## 🔑 Variables d'environnement
 
-Renseignées dans `.env` (voir `.env.example`) :
+Toutes renseignées dans `.env` (voir `.env.example`) :
 
 | Variable | Requis | Description |
 |---|---|---|
+| `VITE_FIREBASE_API_KEY` | ✅ | Clé API Firebase Web (publique). |
+| `VITE_FIREBASE_AUTH_DOMAIN` | ✅ | Domaine d'authentification (`<projet>.firebaseapp.com`). |
+| `VITE_FIREBASE_PROJECT_ID` | ✅ | ID du projet Firebase (utilisé aussi côté serveur par l'Admin SDK). |
+| `VITE_FIREBASE_STORAGE_BUCKET` | ✅ | Bucket de stockage. |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | ✅ | Sender ID Cloud Messaging. |
+| `VITE_FIREBASE_APP_ID` | ✅ | ID de l'application Web. |
+| `VITE_FIREBASE_DATABASE_ID` | ⚪️ | Base Firestore nommée. Vide = base `(default)`. |
+| `VITE_FIREBASE_MEASUREMENT_ID` | ⚪️ | ID Google Analytics (optionnel). |
 | `SERVER_ENCRYPTION_KEY` | ✅ | Chiffre au repos la clé API LLM de l'admin. **≥ 64 caractères hex** — le serveur refuse de démarrer sinon. Génère-la avec `openssl rand -hex 32`. |
 | `GEMINI_API_KEY` | ⚪️ | Clé Gemini utilisée en repli quand aucun fournisseur n'est configuré dans le panneau admin. |
 | `APP_URL` | ⚪️ | URL publique de l'applet (liens auto-référencés). Par défaut `http://localhost:3000`. |
+
+> Les variables `VITE_FIREBASE_*` sont lues à la fois par le client (`import.meta.env`)
+> et par le serveur Express (`process.env`), à partir du même `.env`.
 
 ## 📱 Captures d'écran
 

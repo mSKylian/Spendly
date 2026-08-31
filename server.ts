@@ -6,18 +6,23 @@ import 'dotenv/config';
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
-import fs from "fs";
 import OpenAI from "openai";
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 
 
-// Initialize Firebase Admin
+// Initialize Firebase Admin from environment variables (see .env.example)
 let db: FirebaseFirestore.Firestore;
 try {
-  const accountConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
-  const app = initializeApp({ projectId: accountConfig.projectId });
-  db = getFirestore(app, accountConfig.firestoreDatabaseId);
+  const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
+  if (!projectId) {
+    throw new Error('VITE_FIREBASE_PROJECT_ID is not set');
+  }
+  const databaseId = process.env.VITE_FIREBASE_DATABASE_ID;
+  const app = initializeApp({ projectId });
+  db = databaseId && databaseId !== '(default)'
+    ? getFirestore(app, databaseId)
+    : getFirestore(app);
 } catch (e) {
   console.error("Failed to initialize Firebase Admin", e);
 }
