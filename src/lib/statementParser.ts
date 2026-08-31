@@ -280,7 +280,9 @@ export function parseCSV(content: string, filename = 'statement.csv'): ParsedSta
       name: bankNameFromFilename(filename),
       bankName: bankNameFromFilename(filename),
       currency: DEFAULT_CURRENCY,
-      openingBalance: 0,
+      // Derive the opening balance from the (possibly explicit) closing balance
+      // and the transactions, so it is accurate rather than assumed zero.
+      openingBalance: round2(closingBalance - sumAmounts(transactions)),
       closingBalance,
     },
     transactions,
@@ -369,7 +371,9 @@ export function parseOFX(content: string, filename = 'statement.ofx'): ParsedSta
       bankName,
       currency,
       ibanLast4,
-      openingBalance: 0,
+      // Derive the opening balance from the (possibly explicit) closing balance
+      // and the transactions, so it is accurate rather than assumed zero.
+      openingBalance: round2(closingBalance - sumAmounts(transactions)),
       closingBalance,
     },
     transactions,
@@ -475,7 +479,9 @@ export function parseQIF(content: string, filename = 'statement.qif'): ParsedSta
       name: bankNameFromFilename(filename),
       bankName: bankNameFromFilename(filename),
       currency: DEFAULT_CURRENCY,
-      openingBalance: 0,
+      // Derive the opening balance from the (possibly explicit) closing balance
+      // and the transactions, so it is accurate rather than assumed zero.
+      openingBalance: round2(closingBalance - sumAmounts(transactions)),
       closingBalance,
     },
     transactions,
