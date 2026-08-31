@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Camera, Upload, X, Loader2, CheckCircle2, AlertCircle, ShoppingBag, TrendingDown, Save } from 'lucide-react';
+import { toISODate } from '../lib/finance';
 
 interface ReceiptScannerProps {
   onScan: (base64Image: string) => Promise<any>;
@@ -52,9 +53,9 @@ export default function ReceiptScanner({ onScan, onSave, onClose, accounts }: Re
         name: result.merchant || 'Achat Scanner',
         amount: -Math.abs(result.total || 0),
         category: 'Nourriture',
-        date: result.date || new Date().toISOString().split('T')[0],
+        date: toISODate(result.date),
         iconName: 'shopping-cart',
-        accountId: selectedAccountId,
+        accountId: selectedAccountId || accounts[0]?.id || '',
         status: 'completed'
       });
       onClose();

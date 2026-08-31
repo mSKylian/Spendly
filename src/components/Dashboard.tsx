@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
+import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
+import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate } from '../lib/finance';
 
 interface DashboardProps {
   store: SpendlyStore;
@@ -16,13 +17,16 @@ export default function Dashboard({ store }: DashboardProps) {
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Fall back to the first account when the field was never touched (accounts
+    // load asynchronously, so the initial state can be empty on first render).
+    const effectiveAccountId = newTrans.accountId || accounts[0]?.id || '';
     await addTransaction({
       name: newTrans.name,
       amount: -Math.abs(Number(newTrans.amount)),
       category: newTrans.category,
-      date: new Date().toISOString().split('T')[0],
+      date: toISODate(),
       iconName: categories.find(c => c.name === newTrans.category)?.iconName || 'shopping',
-      accountId: newTrans.accountId
+      accountId: effectiveAccountId
     });
     setShowAdd(false);
     setNewTrans({ name: '', amount: '', category: 'Nourriture', accountId: accounts[0]?.id || '' });
@@ -35,13 +39,22 @@ export default function Dashboard({ store }: DashboardProps) {
       case 'car': return <Car size={20} className="text-blue-600" />;
       case 'play': return <Play size={20} className="text-teal-600" />;
       case 'coffee': return <Coffee size={20} className="text-secondary" />;
-      case 'shopping': return <ShoppingCart size={20} className="text-secondary" />;
+      case 'shopping':
+      case 'shopping-cart': return <ShoppingCart size={20} className="text-secondary" />;
+      case 'shopping-bag': return <ShoppingBag size={20} className="text-secondary" />;
+      case 'music': return <Music size={20} className="text-secondary" />;
+      case 'cloud': return <Cloud size={20} className="text-secondary" />;
+      case 'package': return <Package size={20} className="text-secondary" />;
       case 'tv': return <Tv size={20} className="text-secondary" />;
-      default: return null;
+      default: return <ShoppingCart size={20} className="text-secondary opacity-60" />;
     }
   };
 
-  const usedPercent = Math.min(100, Math.round((categories.reduce((acc, c) => acc + c.spent, 0) / categories.reduce((acc, c) => acc + c.limit, 0)) * 100));
+  // Derive spend from transactions (single source of truth) for the current month,
+  // so the Dashboard and the Stats page always show the same numbers.
+  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month'), [transactions]);
+  const monthSpent = useMemo(() => totalSpent(transactions, 'month'), [transactions]);
+  const usedPercent = computeUsedPercent(monthSpent, user?.limits?.month ?? 0);
 
   return (
     <div className="flex flex-col gap-8 pb-32">
@@ -161,8 +174,8 @@ export default function Dashboard({ store }: DashboardProps) {
                   <label className="text-[10px] font-bold uppercase tracking-widest text-secondary ml-1">Compte bancaire</label>
                   <div className="relative">
                     <Landmark className="absolute left-4 top-1/2 -translate-y-1/2 text-secondary opacity-40" size={18} />
-                    <select 
-                      value={newTrans.accountId}
+                    <select
+                      value={newTrans.accountId || accounts[0]?.id || ''}
                       onChange={e => setNewTrans({...newTrans, accountId: e.target.value})}
                       className="w-full bg-surface-container-low border border-surface-container p-4 pl-12 rounded-2xl text-sm font-bold focus:outline-none focus:border-primary transition-all appearance-none"
                     >
@@ -256,21 +269,24 @@ export default function Dashboard({ store }: DashboardProps) {
       <section>
         <h3 className="font-display font-extrabold text-lg mb-4">Catégories</h3>
         <div className="grid grid-cols-2 gap-4">
-          {categories.map((cat) => (
+          {categories.map((cat) => {
+            const spent = monthByCategory[cat.name.toLowerCase()] || 0;
+            return (
             <div key={cat.name} className="bg-surface-container-lowest p-5 rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)]">
               <div className={`w-10 h-10 rounded-xl mb-3 flex items-center justify-center bg-opacity-10 ${cat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
                 {getIcon(cat.iconName)}
               </div>
               <p className="text-[10px] uppercase font-bold text-secondary mb-0.5 tracking-wider">{cat.name}</p>
-              <p className="font-display font-extrabold text-lg">{cat.spent.toLocaleString('fr-FR')}€</p>
+              <p className="font-display font-extrabold text-lg">{spent.toLocaleString('fr-FR')}€</p>
               <div className="w-full h-1.5 bg-surface-container rounded-full mt-3 overflow-hidden">
-                <div 
-                  className={`h-full ${cat.colorClass}`} 
-                  style={{ width: `${Math.min(100, (cat.spent / cat.limit) * 100)}%` }}
+                <div
+                  className={`h-full ${cat.colorClass}`}
+                  style={{ width: `${cat.limit > 0 ? Math.min(100, (spent / cat.limit) * 100) : 0}%` }}
                 />
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -289,7 +305,7 @@ export default function Dashboard({ store }: DashboardProps) {
                 </div>
                 <div>
                   <p className="font-bold text-sm">{t.name}</p>
-                  <p className="text-[10px] font-medium text-secondary uppercase tracking-tight">{t.date}</p>
+                  <p className="text-[10px] font-medium text-secondary uppercase tracking-tight">{formatTxDate(t.date)}</p>
                 </div>
               </div>
               <p className={`font-display font-extrabold ${t.amount < 0 ? 'text-error' : 'text-primary'}`}>

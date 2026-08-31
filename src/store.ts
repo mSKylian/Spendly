@@ -456,12 +456,8 @@ export function useSpendlyStore(): SpendlyStore {
           tx.update(accountRef, { balance: accountSnap.data().balance + t.amount });
         }
 
-        const cat = categories.find(c => c.name.toLowerCase() === t.category.toLowerCase());
-        if (cat) {
-          tx.update(doc(db, 'users', userId, 'categories', cat.id!), { 
-            spent: cat.spent + Math.abs(t.amount) 
-          });
-        }
+        // Category spend is derived from transactions at read time (see lib/finance),
+        // so there is no denormalized category.spent to update here.
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions`);
