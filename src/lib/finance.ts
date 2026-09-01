@@ -96,19 +96,29 @@ export function spentByCategory(
 
 /**
  * Reference date for the monthly dashboard: now — or, when the current month
- * has no transactions at all, the date of the most recent transaction. A
- * freshly imported statement (usually a past month) then shows its own month
- * instead of an all-zero current month. Callers should label the shown month
- * when it isn't the current one.
+ * has no transactions at all, the month holding the most expense transactions
+ * (latest wins a tie). A freshly imported statement then shows its dominant
+ * month, not a spillover month with a stray transaction or two. Callers should
+ * label the shown month when it isn't the current one.
  */
 export function monthReference(transactions: Transaction[], now: Date = new Date()): Date {
   if (transactionsInPeriod(transactions, 'month', now).length > 0) return now;
-  let latest: Date | null = null;
+  const counts = new Map<string, { count: number; ref: Date }>();
   for (const t of transactions) {
     const d = parseTxDate(t.date);
-    if (d && (!latest || d > latest)) latest = d;
+    if (!d || expenseAmount(t) === 0) continue;
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const entry = counts.get(key);
+    if (entry) entry.count++;
+    else counts.set(key, { count: 1, ref: d });
   }
-  return latest ?? now;
+  let best: { count: number; ref: Date } | null = null;
+  for (const entry of counts.values()) {
+    if (!best || entry.count > best.count || (entry.count === best.count && entry.ref > best.ref)) {
+      best = entry;
+    }
+  }
+  return best?.ref ?? now;
 }
 
 /** Round a percentage to an integer, clamped to [0, 100]; safe for zero limits. */
