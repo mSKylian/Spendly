@@ -556,13 +556,29 @@ async function startServer() {
          }
       }
 
+      // Key resolution: admin-portal config first, GEMINI_API_KEY env as fallback
+      // (same fallback the scan-receipt and parse-statement endpoints use).
       let apiKey = '';
       if (config?.apiKey) {
         try { apiKey = decrypt(config.apiKey); } catch(e) {}
       }
+      let usingEnvFallback = false;
+      if (!apiKey && process.env.GEMINI_API_KEY) {
+        apiKey = process.env.GEMINI_API_KEY;
+        usingEnvFallback = true;
+      }
+
+      if (!apiKey) {
+        return res.json({
+          insight: "L'analyse IA n'est pas configurée. Un administrateur doit renseigner une clé API (portail admin ou GEMINI_API_KEY).",
+          newChallenges: []
+        });
+      }
 
       const systemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
-      const provider = (config?.provider || 'openai').toLowerCase();
+      // The env fallback key is a Gemini key: route to Google regardless of any
+      // provider configured without a key.
+      const provider = usingEnvFallback ? 'google' : (config?.provider || 'openai').toLowerCase();
       const ALLOWED_BASE_URL_HOSTS = [
         'generativelanguage.googleapis.com',
         'api.openai.com',
@@ -571,7 +587,11 @@ async function startServer() {
         'localhost',
         '127.0.0.1',
       ];
-      let rawBaseURL = config?.url || undefined;
+      // When falling back to the env Gemini key, ignore a custom URL configured
+      // for a different provider — the key would be sent to the wrong host.
+      let rawBaseURL = (usingEnvFallback && (config?.provider || '').toLowerCase() !== 'google')
+        ? undefined
+        : (config?.url || undefined);
       let baseURL: string | undefined = undefined;
       if (rawBaseURL) {
         try {
@@ -588,7 +608,9 @@ async function startServer() {
           baseURL = undefined;
         }
       }
-      const model = config?.model || 'gpt-4o-mini';
+      const model = usingEnvFallback
+        ? ((config?.provider || '').toLowerCase() === 'google' && config?.model ? config.model : 'gemini-1.5-flash')
+        : (config?.model || 'gpt-4o-mini');
 
       if (provider === 'google' && !baseURL) {
          baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
@@ -600,7 +622,7 @@ async function startServer() {
 
       try {
         const openai = new OpenAI({
-          apiKey: apiKey || 'dummy-key-for-local',
+          apiKey: apiKey,
           baseURL: baseURL
         });
 
