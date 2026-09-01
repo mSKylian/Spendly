@@ -91,10 +91,27 @@ Periods are **calendar-bounded** half-open windows `[start, end)` (Mon-week / 1s
 leak into the current period. The category breakdown is derived from every category present
 in the period's transactions, so it always sums to the period total.
 
+## Linking accounts
+
+The Accounts tab offers three ways to link an account:
+
+- **Connecter** — pick a provider type (Compte Courant, PayPal, Livret A, Crypto). This
+  creates the account with that type's branding and a **zero** balance (no fake money);
+  `livret_a`/`crypto` require `tier == 'pro'`. The account is then funded by importing a
+  statement or editing it.
+- **Relevé** — import a statement file, which creates a new account from it (below).
+- **Manuel** — a custom account with a user-entered opening balance.
+
+Tapping an account opens its **detail view**: the account's balance and its transactions,
+plus an **Importer un relevé** action that imports a statement *into that existing account*
+(its transactions are appended and the account balance is set to the statement's closing
+balance).
+
 ## Statement import
 
-The bank-onboarding flow imports a statement file and creates one account plus its
-transactions. Parsing normalizes any supported format to:
+Importing a statement file (either as a new account, or into an existing one) parses it,
+then creates/updates the account and its transactions. Parsing normalizes any supported
+format to:
 
 ```ts
 interface ParsedStatement {

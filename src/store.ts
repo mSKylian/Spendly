@@ -43,7 +43,7 @@ export type SpendlyStore = {
   addTransaction: (t: Omit<Transaction, 'id'>) => Promise<void>;
   addAccount: (a: Omit<Account, 'id'>) => Promise<string | void>;
   deleteAccount: (id: string) => Promise<void>;
-  importStatement: (parsed: ParsedStatement) => Promise<string | void>;
+  importStatement: (parsed: ParsedStatement, targetAccountId?: string) => Promise<string | void>;
   updateUser: (user: Partial<UserProfile>) => Promise<void>;
   login: () => Promise<void>;
   logout: () => Promise<void>;
@@ -351,33 +351,46 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
-  // Create an account and its transactions from a parsed bank statement. The account
-  // balance is the statement's closing balance; the wallet total re-derives from it.
-  const importStatement = async (parsed: ParsedStatement) => {
+  // Import a parsed bank statement. With no targetAccountId, a new account is created
+  // (balance = statement closing balance). With a targetAccountId, the statement's
+  // transactions are appended to that existing account and its balance is set to the
+  // statement's closing balance. Either way the wallet total re-derives from accounts.
+  const importStatement = async (parsed: ParsedStatement, targetAccountId?: string) => {
     if (!fbUser) return;
     const userId = fbUser.uid;
     const clampBalance = (n: number) => Math.max(-1000000, Math.min(10000000, Number(n) || 0));
     const clampAmount = (n: number) => Math.max(-100000, Math.min(100000, Number(n) || 0));
     try {
       const batch = writeBatch(db);
-      const accRef = doc(collection(db, 'users', userId, 'accounts'));
-      const accountDoc: any = {
-        name: (parsed.account.name || 'Compte importé').slice(0, 100),
-        bankName: (parsed.account.bankName || 'Banque').slice(0, 100),
-        balance: clampBalance(parsed.account.closingBalance),
-        type: 'current',
-        iconName: 'bank',
-        colorClass: 'bg-blue-500',
-        currency: (parsed.account.currency || 'EUR').slice(0, 8),
-        source: 'import',
-      };
-      if (typeof parsed.account.openingBalance === 'number') {
-        accountDoc.openingBalance = clampBalance(parsed.account.openingBalance);
+      let accountId: string;
+
+      if (targetAccountId) {
+        // Import into an existing account: set its balance to the statement's close.
+        accountId = targetAccountId;
+        batch.update(doc(db, 'users', userId, 'accounts', targetAccountId), {
+          balance: clampBalance(parsed.account.closingBalance),
+        });
+      } else {
+        const accRef = doc(collection(db, 'users', userId, 'accounts'));
+        accountId = accRef.id;
+        const accountDoc: any = {
+          name: (parsed.account.name || 'Compte importé').slice(0, 100),
+          bankName: (parsed.account.bankName || 'Banque').slice(0, 100),
+          balance: clampBalance(parsed.account.closingBalance),
+          type: 'current',
+          iconName: 'bank',
+          colorClass: 'bg-blue-500',
+          currency: (parsed.account.currency || 'EUR').slice(0, 8),
+          source: 'import',
+        };
+        if (typeof parsed.account.openingBalance === 'number') {
+          accountDoc.openingBalance = clampBalance(parsed.account.openingBalance);
+        }
+        if (parsed.account.ibanLast4) {
+          accountDoc.ibanLast4 = String(parsed.account.ibanLast4).slice(-4);
+        }
+        batch.set(accRef, accountDoc);
       }
-      if (parsed.account.ibanLast4) {
-        accountDoc.ibanLast4 = String(parsed.account.ibanLast4).slice(-4);
-      }
-      batch.set(accRef, accountDoc);
 
       // Firestore batches cap at 500 writes; keep well under with the account included.
       for (const t of parsed.transactions.slice(0, 480)) {
@@ -395,13 +408,13 @@ export function useSpendlyStore(): SpendlyStore {
           iconName: t.amount >= 0 ? 'zap' : 'shopping-cart',
           date: toISODate(t.date),
           status: 'completed',
-          accountId: accRef.id,
+          accountId,
           rawLabel: (t.label || '').slice(0, 200),
         });
       }
 
       await batch.commit();
-      return accRef.id;
+      return accountId;
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `users/${userId}/accounts`);
     }

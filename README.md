@@ -7,7 +7,7 @@ Spendly est une application mobile et web de gestion financière personnelle qui
 - 📊 **Tableau de bord visuel** — Visualise tes dépenses par catégorie avec des barres de progression colorées, comme un temps d'écran pour tes finances
 - 🤖 **Conseiller IA personnalisé** — Un moteur d'analyse IA détecte tes habitudes et génère des recommandations concrètes (carte de fidélité, abonnement partagé, alternatives moins chères...)
 - 💡 **Page Alternatives** — Découvre combien tu pourrais économiser chaque mois avec des conseils adaptés à tes vrais achats
-- 🔗 **Import de relevés bancaires** — Lie un compte en important un relevé (CSV, OFX, QIF, PDF ou photo). Les formats structurés sont analysés localement ; les PDF/images via l'IA. Le solde du compte provient du relevé — l'argent vient toujours de tes comptes réels (voir [docs/DATA_MODEL.md](docs/DATA_MODEL.md)). Exemples de fichiers dans [`examples/statements/`](examples/statements/).
+- 🔗 **Comptes bancaires** — Lie un compte de trois façons : *Connecter* (Compte Courant, PayPal, Livret A, Crypto), *Importer un relevé* (CSV, OFX, QIF, PDF ou photo — formats structurés analysés localement, PDF/images via l'IA), ou *Manuel* (solde d'ouverture). Clique un compte pour voir ses transactions et y importer un relevé. Les soldes proviennent des relevés — l'argent vient toujours de tes comptes réels (voir [docs/DATA_MODEL.md](docs/DATA_MODEL.md)). Exemples dans [`examples/statements/`](examples/statements/).
 - 🔒 **Magic Link** — Connexion sans mot de passe via Firebase Authentication
 - ⚙️ **Panneau d'administration** — Configure ton fournisseur IA préféré (Gemini, OpenAI, Anthropic, OpenRouter, ou un modèle local via Ollama/LM Studio)
 
