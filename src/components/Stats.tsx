@@ -8,7 +8,8 @@ import {
   spentByCategory,
   usedPercent as computeUsedPercent,
   hexFromColorClass,
-  monthlySeries,
+  periodSeries,
+  periodStart,
   monthReference,
   transactionsForCategory,
   parseTxDate,
@@ -36,7 +37,8 @@ const PERIOD_MAP: Record<PeriodLabel, Period> = {
   'Année': 'year',
 };
 
-const MONTHS_SHOWN = 6;
+// Chart buckets per period: 8 weeks / 6 months / 3 years.
+const PERIOD_BUCKETS: Record<Period, number> = { week: 8, month: 6, year: 3 };
 
 export default function Stats({ store }: StatsProps) {
   const { transactions, categories, user, recategorizeTransaction, addCustomCategory } = store;
@@ -56,9 +58,16 @@ export default function Stats({ store }: StatsProps) {
   const [showAddCat, setShowAddCat] = useState(false);
   const [newCat, setNewCat] = useState({ name: '', colorClass: CUSTOM_COLOR_OPTIONS[0], iconName: CUSTOM_ICON_OPTIONS[0], limit: '' });
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [selectedMonth, setSelectedMonth] = useState<Date | null>(null);
+  // Reference bucket tapped on a chart (a week/month/year start, per period).
+  const [selectedRef, setSelectedRef] = useState<Date | null>(null);
 
   const period = PERIOD_MAP[periodLabel];
+
+  const switchPeriod = (label: PeriodLabel) => {
+    setPeriodLabel(label);
+    setSelectedRef(null); // a week selection means nothing in month view
+    setSelectedCategory(null);
+  };
 
   // The chart window ends at the latest month that has data when that month is
   // ahead of today (freshly imported statements), otherwise at the current month.
@@ -72,9 +81,10 @@ export default function Stats({ store }: StatsProps) {
     return latest && latest > now ? latest : now;
   }, [transactions]);
 
+  // Chart buckets follow the period selector: weeks, months, or years.
   const series = useMemo(
-    () => monthlySeries(transactions, MONTHS_SHOWN, chartAnchor, keyOf),
-    [transactions, chartAnchor, keyOf]
+    () => periodSeries(transactions, period, PERIOD_BUCKETS[period], chartAnchor, keyOf),
+    [transactions, period, chartAnchor, keyOf]
   );
 
   // Fixed categorical color assignment: order by total spend across the whole
@@ -94,14 +104,19 @@ export default function Stats({ store }: StatsProps) {
       });
   }, [series, metaFor]);
 
-  // Reference date for the breakdown: the tapped month (month period only),
-  // defaulting to the month-with-data fallback used by the dashboard.
-  const monthRefDate = useMemo(
-    () => selectedMonth ?? monthReference(transactions),
-    [selectedMonth, transactions]
-  );
-  const refDate = useMemo(() => (period === 'month' ? monthRefDate : new Date()), [period, monthRefDate]);
-  const refLabel = monthRefDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+  // Reference date for the budget card and breakdown: the tapped chart bucket,
+  // defaulting to the month-with-data fallback (month view, matching the
+  // dashboard) or the chart anchor (week/year views).
+  const refDate = useMemo(() => {
+    if (selectedRef) return selectedRef;
+    return period === 'month' ? monthReference(transactions) : chartAnchor;
+  }, [selectedRef, period, transactions, chartAnchor]);
+  const refLabel = useMemo(() => {
+    const start = periodStart(period, refDate);
+    if (period === 'week') return `semaine du ${start.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long' })}`;
+    if (period === 'month') return start.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+    return String(start.getFullYear());
+  }, [period, refDate]);
 
   const data = useMemo(() => {
     const spent = totalSpent(transactions, period, refDate);
@@ -137,14 +152,12 @@ export default function Stats({ store }: StatsProps) {
 
   const flowMax = Math.max(...series.map((p) => Math.max(p.income, p.spend)), 1);
   const stackMax = Math.max(...series.map((p) => p.spend), 1);
-  const selectedPoint = series.find(
-    (p) => p.start.getMonth() === monthRefDate.getMonth() && p.start.getFullYear() === monthRefDate.getFullYear()
-  );
+  const refKey = periodStart(period, refDate).toISOString().slice(0, 10);
+  const selectedPoint = series.find((p) => p.key === refKey);
 
-  const selectMonth = (start: Date) => {
-    setSelectedMonth(start);
+  const selectBucket = (start: Date) => {
+    setSelectedRef(start);
     setSelectedCategory(null);
-    setPeriodLabel('Mois');
   };
 
   return (
@@ -154,7 +167,7 @@ export default function Stats({ store }: StatsProps) {
         {(['Semaine', 'Mois', 'Année'] as PeriodLabel[]).map((p) => (
           <button
             key={p}
-            onClick={() => setPeriodLabel(p)}
+            onClick={() => switchPeriod(p)}
             className={`flex-1 py-2.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider transition-all duration-200
               ${periodLabel === p ? 'bg-primary text-white shadow-md' : 'text-secondary hover:bg-surface-container-high'}`}
           >
@@ -186,7 +199,7 @@ export default function Stats({ store }: StatsProps) {
             return (
               <button
                 key={p.key}
-                onClick={() => selectMonth(p.start)}
+                onClick={() => selectBucket(p.start)}
                 className="flex-1 flex flex-col items-center gap-1.5 group"
                 aria-label={`${p.label} : revenus ${Math.round(p.income)} €, dépenses ${Math.round(p.spend)} €`}
               >
@@ -210,14 +223,14 @@ export default function Stats({ store }: StatsProps) {
       {/* Monthly spend trend, stacked by category */}
       <section className="bg-surface-container-lowest rounded-2xl p-6 shadow-[0px_4px_20px_rgba(0,0,0,0.04)]">
         <h2 className="font-display font-extrabold text-base mb-1">Tendance des dépenses</h2>
-        <p className="text-[10px] uppercase font-bold text-secondary tracking-wider mb-3">Par catégorie · toucher un mois pour le détailler</p>
+        <p className="text-[10px] uppercase font-bold text-secondary tracking-wider mb-3">Par catégorie · toucher une barre pour la détailler</p>
         <div className="flex items-end justify-between gap-2 h-36">
           {series.map((p) => {
             const isSel = selectedPoint?.key === p.key;
             return (
               <button
                 key={p.key}
-                onClick={() => selectMonth(p.start)}
+                onClick={() => selectBucket(p.start)}
                 className="flex-1 flex flex-col items-center gap-1.5 group"
                 aria-label={`${p.label} : ${Math.round(p.spend)} € dépensés`}
               >
@@ -258,9 +271,7 @@ export default function Stats({ store }: StatsProps) {
         <div className="w-full flex justify-between items-start">
           <div>
             <h2 className="font-display font-extrabold text-base">Budget Global</h2>
-            {period === 'month' && (
-              <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">{refLabel}</p>
-            )}
+            <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">{refLabel}</p>
           </div>
           <Info className="text-primary hover:scale-110 transition-transform cursor-pointer" size={20} />
         </div>
@@ -321,9 +332,7 @@ export default function Stats({ store }: StatsProps) {
       <section>
         <div className="flex items-baseline gap-2 mb-4">
           <h2 className="font-display font-extrabold text-lg">Répartition par catégorie</h2>
-          {period === 'month' && (
-            <span className="text-[10px] uppercase font-bold text-secondary tracking-wider">{refLabel}</span>
-          )}
+          <span className="text-[10px] uppercase font-bold text-secondary tracking-wider">{refLabel}</span>
         </div>
         <div className="bg-surface-container-lowest rounded-2xl p-4 shadow-[0px_4px_20px_rgba(0,0,0,0.04)] space-y-2">
           {data.categories.length === 0 && (

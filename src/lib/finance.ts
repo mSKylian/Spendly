@@ -140,38 +140,50 @@ export function monthReference(transactions: Transaction[], now: Date = new Date
   return best?.ref ?? now;
 }
 
-/** One month of derived series data. `key` is 'YYYY-MM'; spend excludes income. */
+/** One bucket of derived series data (a week, month, or year). */
 export interface MonthPoint {
-  key: string;
-  label: string;      // e.g. 'nov.' — short fr-FR month
+  key: string;        // bucket start as ISO date
+  label: string;      // short fr-FR label ('17 nov.', 'nov.', '2026')
   start: Date;
   spend: number;      // total expenses (positive magnitude)
   income: number;     // total credits
-  byCategory: Record<string, number>; // expenses per lower-cased category
+  byCategory: Record<string, number>; // expenses per category key
 }
 
-function monthKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+function stepBack(period: Period, start: Date, steps: number): Date {
+  const d = new Date(start);
+  if (period === 'week') d.setDate(d.getDate() - steps * 7);
+  else if (period === 'month') d.setMonth(d.getMonth() - steps);
+  else d.setFullYear(d.getFullYear() - steps);
+  return d;
+}
+
+function bucketLabel(period: Period, start: Date): string {
+  if (period === 'week') return start.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+  if (period === 'month') return start.toLocaleDateString('fr-FR', { month: 'short' });
+  return String(start.getFullYear());
 }
 
 /**
- * Per-month spend/income series for the `months` calendar months ending at the
- * month of `now` (inclusive), oldest first. Derived purely from transactions.
+ * Per-period spend/income series for the `count` calendar buckets (weeks,
+ * months, or years) ending at the bucket of `now` (inclusive), oldest first.
+ * Derived purely from transactions.
  */
-export function monthlySeries(
+export function periodSeries(
   transactions: Transaction[],
-  months: number,
+  period: Period,
+  count: number,
   now: Date = new Date(),
   keyOf: (t: Transaction) => string = slugKey
 ): MonthPoint[] {
   const points: MonthPoint[] = [];
   const byKey = new Map<string, MonthPoint>();
-  for (let i = months - 1; i >= 0; i--) {
-    const start = periodStart('month', now);
-    start.setMonth(start.getMonth() - i);
+  const anchorStart = periodStart(period, now);
+  for (let i = count - 1; i >= 0; i--) {
+    const start = stepBack(period, anchorStart, i);
     const point: MonthPoint = {
-      key: monthKey(start),
-      label: start.toLocaleDateString('fr-FR', { month: 'short' }),
+      key: start.toISOString().slice(0, 10),
+      label: bucketLabel(period, start),
       start,
       spend: 0,
       income: 0,
@@ -183,7 +195,7 @@ export function monthlySeries(
   for (const t of transactions) {
     const d = parseTxDate(t.date);
     if (!d) continue;
-    const point = byKey.get(monthKey(d));
+    const point = byKey.get(periodStart(period, d).toISOString().slice(0, 10));
     if (!point) continue;
     if (t.amount > 0) {
       point.income += t.amount;
@@ -195,6 +207,16 @@ export function monthlySeries(
     }
   }
   return points;
+}
+
+/** Per-month series — see periodSeries. */
+export function monthlySeries(
+  transactions: Transaction[],
+  months: number,
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
+): MonthPoint[] {
+  return periodSeries(transactions, 'month', months, now, keyOf);
 }
 
 /** Expense transactions of one category key within the period. */
