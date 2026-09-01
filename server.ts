@@ -29,6 +29,36 @@ function toSlug(category: unknown): string {
   return isValidSlug(c) ? c : slugFromLegacy(c);
 }
 
+// Default analyze prompt, aligned with the category engine: the model receives
+// an aggregated DIGEST (built by src/lib/digest.ts), never raw transactions,
+// and must ground every recommendation in the digest's numbers.
+const DEFAULT_ANALYZE_PROMPT = `Tu es un conseiller financier expert.
+Tu reçois un DIGEST agrégé des finances de l'utilisateur (jamais la liste brute des transactions) :
+- "months" : totaux mensuels (spend, income) et dépenses par catégorie (byCategory, clés = slugs de catégorie) ;
+- "topMerchants" : principaux marchands par dépense totale (label, categoryId, total, count) ;
+- "recurring" : paiements récurrents détectés algorithmiquement (label, categoryId, avgAmount, occurrences).
+
+Renvoie UNIQUEMENT un JSON de la forme :
+{
+  "insight": "string — résumé court et percutant qui cite au moins un chiffre réel du digest",
+  "newChallenges": [
+    {
+      "title": "string (action courte)",
+      "subtitle": "string (marchand ou catégorie visé)",
+      "description": "string (explication concrète appuyée sur les chiffres du digest)",
+      "potentialSaving": number (économie MENSUELLE réaliste, inférieure au montant réel correspondant),
+      "category": "string (slug de catégorie)",
+      "level": number (1 à 3 selon la difficulté)
+    }
+  ]
+}
+
+Règles :
+- 2 à 3 recommandations maximum, chacune ancrée sur un élément précis du digest
+  (un paiement récurrent, une catégorie qui domine ou augmente, un marchand principal).
+- Ne recommande jamais une économie supérieure à la dépense réelle correspondante.
+- Aucun texte en dehors du JSON.`;
+
 
 // Initialize Firebase Admin from environment variables (see .env.example)
 let db: FirebaseFirestore.Firestore;
@@ -644,7 +674,7 @@ async function startServer() {
         });
       }
 
-      const baseSystemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
+      const baseSystemPrompt = config?.systemPrompt || DEFAULT_ANALYZE_PROMPT;
       // The category enum applies even to admin-customized prompts.
       const systemPrompt = baseSystemPrompt + '\n' + CATEGORY_PROMPT_RULES;
       // The env fallback key is a Gemini key: route to Google regardless of any
