@@ -47,6 +47,53 @@ function firestoreErrorResponse(res: express.Response, e: any, context: string) 
   return res.status(500).json({ error: `${context}` });
 }
 
+const ALLOWED_BASE_URL_HOSTS = [
+  'generativelanguage.googleapis.com',
+  'api.openai.com',
+  'api.anthropic.com',
+  'openrouter.ai',
+  'localhost',
+  '127.0.0.1',
+];
+
+// localhost, loopback, or an RFC1918 private-network address (a LAN LM Studio
+// or Ollama server). These may use plain HTTP and skip the host allowlist.
+function isPrivateHost(hostname: string): boolean {
+  return hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    || /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    || /^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(hostname);
+}
+
+// Normalize + validate a custom LLM base URL. Accepts scheme-less input like
+// "localhost:1234/v1" (LM Studio / Ollama) by prepending http:// for private
+// hosts and https:// otherwise, then enforces HTTPS-or-private + host allowlist.
+function validateBaseUrl(raw: unknown): { url?: string; isLocal?: boolean; error?: string } {
+  if (!raw || typeof raw !== 'string' || !raw.trim()) return {};
+  let candidate = raw.trim();
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate)) {
+    const host = candidate.split(/[/:]/)[0];
+    candidate = (isPrivateHost(host) ? 'http://' : 'https://') + candidate;
+  }
+  try {
+    const parsed = new URL(candidate);
+    const isLocal = isPrivateHost(parsed.hostname);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return { error: 'Custom URL must use HTTP(S).' };
+    }
+    if (parsed.protocol !== 'https:' && !isLocal) {
+      return { error: 'Custom URL must use HTTPS (HTTP is only allowed for local/private addresses).' };
+    }
+    if (!isLocal && !ALLOWED_BASE_URL_HOSTS.some(h => parsed.hostname === h || parsed.hostname.endsWith('.' + h))) {
+      return { error: 'URL host is not in the allowlist.' };
+    }
+    return { url: candidate, isLocal };
+  } catch {
+    return { error: 'Invalid URL format.' };
+  }
+}
+
 const SERVER_ENCRYPTION_KEY_ENV = process.env.SERVER_ENCRYPTION_KEY;
 if (!SERVER_ENCRYPTION_KEY_ENV || SERVER_ENCRYPTION_KEY_ENV.length < 64) {
   throw new Error('[Spendly] SERVER_ENCRYPTION_KEY env var is required and must be at least 64 hex characters. Set it before starting the server.');
@@ -410,7 +457,12 @@ async function startServer() {
   app.post("/api/admin/models", authenticate, verifyAdmin, async (req, res) => {
     try {
       const { provider, url, apiKey } = req.body;
-      
+
+      const validated = validateBaseUrl(url);
+      if (validated.error) {
+        return res.status(400).json({ error: validated.error });
+      }
+
       let actualApiKey = apiKey;
       if (!actualApiKey || actualApiKey.includes('•') || actualApiKey === '') {
           const doc = await db.collection('admin').doc('llm_config').get();
@@ -421,6 +473,10 @@ async function startServer() {
           }
       }
 
+      // Local servers (LM Studio, Ollama) don't check the key — any value works.
+      if (!actualApiKey && validated.isLocal) {
+         actualApiKey = 'local-llm';
+      }
       if (!actualApiKey) {
          return res.status(400).json({ error: "Veuillez fournir une clé API valide." });
       }
@@ -456,32 +512,9 @@ async function startServer() {
          return res.json({ models: ['claude-3-5-sonnet-20240620', 'claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307'] });
       }
 
-      const ALLOWED_BASE_URL_HOSTS_M = [
-        'generativelanguage.googleapis.com',
-        'api.openai.com',
-        'api.anthropic.com',
-        'openrouter.ai',
-        'localhost',
-        '127.0.0.1',
-      ];
-      let validatedUrl: string | undefined = undefined;
-      if (url) {
-        try {
-          const parsedUrl = new URL(url);
-          if (parsedUrl.protocol !== 'https:' && parsedUrl.hostname !== 'localhost' && parsedUrl.hostname !== '127.0.0.1') {
-            return res.status(400).json({ error: 'Custom URL must use HTTPS.' });
-          }
-          if (!ALLOWED_BASE_URL_HOSTS_M.some(h => parsedUrl.hostname === h || parsedUrl.hostname.endsWith('.' + h))) {
-            return res.status(400).json({ error: `URL host is not in the allowlist.` });
-          }
-          validatedUrl = url;
-        } catch (e) {
-          return res.status(400).json({ error: 'Invalid URL format.' });
-        }
-      }
       const openai = new OpenAI({
          apiKey: actualApiKey,
-         baseURL: validatedUrl || undefined
+         baseURL: validated.url || undefined
       });
 
       const response = await openai.models.list();
@@ -499,9 +532,13 @@ async function startServer() {
   app.post("/api/admin/config", authenticate, verifyAdmin, async (req, res) => {
     try {
       const { provider, url, model, apiKey, systemPrompt, isEnabled, maxTransactions, maintenanceMode, allowSignups, announcement } = req.body;
-      const dataToSave: any = { 
-        provider, 
-        url, 
+      const validated = validateBaseUrl(url);
+      if (validated.error) {
+        return res.status(400).json({ error: validated.error });
+      }
+      const dataToSave: any = {
+        provider,
+        url: validated.url || '',
         model, 
         systemPrompt, 
         isEnabled: isEnabled !== false, 
@@ -556,14 +593,22 @@ async function startServer() {
          }
       }
 
-      // Key resolution: admin-portal config first, GEMINI_API_KEY env as fallback
-      // (same fallback the scan-receipt and parse-statement endpoints use).
+      const validated = validateBaseUrl(config?.url);
+      if (validated.error) {
+        console.warn('Invalid or disallowed baseURL in config:', validated.error);
+      }
+
+      // Key resolution: admin-portal config first; a local provider (LM Studio,
+      // Ollama) needs no key; GEMINI_API_KEY env as last resort (same fallback
+      // the scan-receipt and parse-statement endpoints use).
       let apiKey = '';
       if (config?.apiKey) {
         try { apiKey = decrypt(config.apiKey); } catch(e) {}
       }
       let usingEnvFallback = false;
-      if (!apiKey && process.env.GEMINI_API_KEY) {
+      if (!apiKey && validated.isLocal) {
+        apiKey = 'local-llm';
+      } else if (!apiKey && process.env.GEMINI_API_KEY) {
         apiKey = process.env.GEMINI_API_KEY;
         usingEnvFallback = true;
       }
@@ -577,39 +622,13 @@ async function startServer() {
 
       const systemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
       // The env fallback key is a Gemini key: route to Google regardless of any
-      // provider configured without a key.
-      const provider = usingEnvFallback ? 'google' : (config?.provider || 'openai').toLowerCase();
-      const ALLOWED_BASE_URL_HOSTS = [
-        'generativelanguage.googleapis.com',
-        'api.openai.com',
-        'api.anthropic.com',
-        'openrouter.ai',
-        'localhost',
-        '127.0.0.1',
-      ];
-      // When falling back to the env Gemini key, ignore a custom URL configured
+      // provider configured without a key, and ignore a custom URL configured
       // for a different provider — the key would be sent to the wrong host.
-      let rawBaseURL = (usingEnvFallback && (config?.provider || '').toLowerCase() !== 'google')
-        ? undefined
-        : (config?.url || undefined);
-      let baseURL: string | undefined = undefined;
-      if (rawBaseURL) {
-        try {
-          const parsedURL = new URL(rawBaseURL);
-          if (parsedURL.protocol !== 'https:' && parsedURL.hostname !== 'localhost' && parsedURL.hostname !== '127.0.0.1') {
-            throw new Error('baseURL must use HTTPS');
-          }
-          if (!ALLOWED_BASE_URL_HOSTS.some(h => parsedURL.hostname === h || parsedURL.hostname.endsWith('.' + h))) {
-            throw new Error(`baseURL host '${parsedURL.hostname}' is not in the allowlist`);
-          }
-          baseURL = rawBaseURL;
-        } catch (urlError: any) {
-          console.warn('Invalid or disallowed baseURL in config:', urlError.message);
-          baseURL = undefined;
-        }
-      }
+      const configProvider = (config?.provider || 'openai').toLowerCase();
+      const provider = usingEnvFallback ? 'google' : configProvider;
+      let baseURL = (usingEnvFallback && configProvider !== 'google') ? undefined : validated.url;
       const model = usingEnvFallback
-        ? ((config?.provider || '').toLowerCase() === 'google' && config?.model ? config.model : 'gemini-1.5-flash')
+        ? (configProvider === 'google' && config?.model ? config.model : 'gemini-1.5-flash')
         : (config?.model || 'gpt-4o-mini');
 
       if (provider === 'google' && !baseURL) {
