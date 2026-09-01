@@ -645,17 +645,34 @@ async function startServer() {
           baseURL: baseURL
         });
 
-        const response = await openai.chat.completions.create({
+        const request = {
           model: model,
           messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: JSON.stringify(transactions) }
+            { role: 'system' as const, content: systemPrompt },
+            { role: 'user' as const, content: JSON.stringify(transactions) }
           ],
-          response_format: { type: 'json_object' }
-        });
-        
+          response_format: { type: 'json_object' as const }
+        };
+
+        let response;
         try {
-           const parsed = JSON.parse(response.choices[0].message.content || '{}');
+          response = await openai.chat.completions.create(request);
+        } catch (err: any) {
+          // Local servers (LM Studio) only accept 'json_schema' or 'text' as
+          // response_format; retry without it — the prompt already demands JSON.
+          if (err?.status === 400 && String(err?.message || '').includes('response_format')) {
+            const { response_format, ...bare } = request;
+            response = await openai.chat.completions.create(bare);
+          } else {
+            throw err;
+          }
+        }
+
+        try {
+           // Models without JSON mode may wrap the payload in ```json fences.
+           const raw = (response.choices[0].message.content || '{}')
+             .replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
+           const parsed = JSON.parse(raw);
            insight = parsed.insight || "Nouvelle analyse";
            newChallenges = parsed.newChallenges || parsed.recommendations || [];
         } catch(e) {

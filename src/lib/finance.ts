@@ -94,6 +94,23 @@ export function spentByCategory(
   return out;
 }
 
+/**
+ * Reference date for the monthly dashboard: now — or, when the current month
+ * has no transactions at all, the date of the most recent transaction. A
+ * freshly imported statement (usually a past month) then shows its own month
+ * instead of an all-zero current month. Callers should label the shown month
+ * when it isn't the current one.
+ */
+export function monthReference(transactions: Transaction[], now: Date = new Date()): Date {
+  if (transactionsInPeriod(transactions, 'month', now).length > 0) return now;
+  let latest: Date | null = null;
+  for (const t of transactions) {
+    const d = parseTxDate(t.date);
+    if (d && (!latest || d > latest)) latest = d;
+  }
+  return latest ?? now;
+}
+
 /** Round a percentage to an integer, clamped to [0, 100]; safe for zero limits. */
 export function usedPercent(spent: number, limit: number): number {
   if (!limit || limit <= 0) return 0;

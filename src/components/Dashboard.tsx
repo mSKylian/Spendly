@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
-import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate } from '../lib/finance';
+import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference } from '../lib/finance';
 
 interface DashboardProps {
   store: SpendlyStore;
@@ -50,11 +50,16 @@ export default function Dashboard({ store }: DashboardProps) {
     }
   };
 
-  // Derive spend from transactions (single source of truth) for the current month,
-  // so the Dashboard and the Stats page always show the same numbers.
-  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month'), [transactions]);
-  const monthSpent = useMemo(() => totalSpent(transactions, 'month'), [transactions]);
+  // Derive spend from transactions (single source of truth). Shows the current
+  // month; if it has no transactions (e.g. right after importing a historical
+  // statement), falls back to the latest month with data, labeled below.
+  const monthRef = useMemo(() => monthReference(transactions), [transactions]);
+  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month', monthRef), [transactions, monthRef]);
+  const monthSpent = useMemo(() => totalSpent(transactions, 'month', monthRef), [transactions, monthRef]);
   const usedPercent = computeUsedPercent(monthSpent, user?.limits?.month ?? 0);
+  const now = new Date();
+  const isCurrentMonth = monthRef.getMonth() === now.getMonth() && monthRef.getFullYear() === now.getFullYear();
+  const monthLabel = monthRef.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
 
   return (
     <div className="flex flex-col gap-8 pb-32">
@@ -267,7 +272,12 @@ export default function Dashboard({ store }: DashboardProps) {
 
       {/* Categories Bento Grid */}
       <section>
-        <h3 className="font-display font-extrabold text-lg mb-4">Catégories</h3>
+        <div className="flex items-baseline gap-2 mb-4">
+          <h3 className="font-display font-extrabold text-lg">Catégories</h3>
+          {!isCurrentMonth && (
+            <span className="text-[10px] uppercase font-bold text-secondary tracking-wider">{monthLabel}</span>
+          )}
+        </div>
         <div className="grid grid-cols-2 gap-4">
           {categories.map((cat) => {
             const spent = monthByCategory[cat.name.toLowerCase()] || 0;
