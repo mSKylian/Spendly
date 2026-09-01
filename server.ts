@@ -27,6 +27,26 @@ try {
   console.error("Failed to initialize Firebase Admin", e);
 }
 
+// Missing/invalid Google credentials surface as UNAUTHENTICATED gRPC errors on
+// every Firestore call; classify them so routes can answer 503 instead of a
+// generic 500.
+function isCredentialError(e: any): boolean {
+  const msg = String(e?.message || '');
+  return e?.code === 16 /* UNAUTHENTICATED */
+    || msg.includes('Could not load the default credentials')
+    || msg.includes('UNAUTHENTICATED');
+}
+
+function firestoreErrorResponse(res: express.Response, e: any, context: string) {
+  console.error(`${context}:`, e?.message || e);
+  if (isCredentialError(e)) {
+    return res.status(503).json({
+      error: 'Server cannot reach Firestore: Google credentials are not configured. See docs/DEV_SETUP.md.'
+    });
+  }
+  return res.status(500).json({ error: `${context}` });
+}
+
 const SERVER_ENCRYPTION_KEY_ENV = process.env.SERVER_ENCRYPTION_KEY;
 if (!SERVER_ENCRYPTION_KEY_ENV || SERVER_ENCRYPTION_KEY_ENV.length < 64) {
   throw new Error('[Spendly] SERVER_ENCRYPTION_KEY env var is required and must be at least 64 hex characters. Set it before starting the server.');
@@ -135,7 +155,7 @@ async function startServer() {
       }
       next();
     } catch (e) {
-      res.status(500).json({ error: 'Internal server error' });
+      firestoreErrorResponse(res, e, 'Admin verification failed');
     }
   };
 
@@ -157,7 +177,7 @@ async function startServer() {
       }
       res.json(data);
     } catch (e) {
-      res.status(500).json({ error: 'Failed to fetch config' });
+      firestoreErrorResponse(res, e, 'Failed to fetch config');
     }
   });
 
@@ -176,7 +196,7 @@ async function startServer() {
       }
       res.json({ success: true });
     } catch (e) {
-      res.status(500).json({ error: 'Failed to clear cache' });
+      firestoreErrorResponse(res, e, 'Failed to clear cache');
     }
   });
 
@@ -271,8 +291,7 @@ async function startServer() {
 
       res.json(result);
     } catch (e) {
-      console.error("Scanning Error:", e);
-      res.status(500).json({ error: 'Failed to scan receipt' });
+      firestoreErrorResponse(res, e, 'Failed to scan receipt');
     }
   });
 
@@ -384,8 +403,7 @@ async function startServer() {
 
       res.json(parsed);
     } catch (e) {
-      console.error("Statement parsing error:", e);
-      res.status(500).json({ error: 'Failed to parse statement' });
+      firestoreErrorResponse(res, e, 'Failed to parse statement');
     }
   });
 
@@ -499,7 +517,7 @@ async function startServer() {
       await db.collection('admin').doc('llm_config').set(dataToSave, { merge: true });
       res.json({ success: true });
     } catch (e) {
-      res.status(500).json({ error: 'Failed to save config' });
+      firestoreErrorResponse(res, e, 'Failed to save config');
     }
   });
 
@@ -619,8 +637,7 @@ async function startServer() {
 
       res.json({ insight, newChallenges });
     } catch (e) {
-       console.error("Analysis error", e);
-       res.status(500).json({ error: 'Analysis failed' });
+       firestoreErrorResponse(res, e, 'Analysis failed');
     }
   });
 
@@ -642,6 +659,26 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  // Firestore connectivity probe: the Admin SDK resolves credentials lazily, so
+  // a missing-credential setup only surfaces as 500s on first request. Probe at
+  // startup and print an actionable message instead.
+  try {
+    await db.collection('admin').doc('llm_config').get();
+    console.log('[Spendly] Firestore connectivity OK');
+  } catch (e: any) {
+    if (isCredentialError(e)) {
+      console.error(
+        '[Spendly] Firestore is UNREACHABLE: no Google credentials found.\n' +
+        '  All /api/* endpoints that use Firestore will return 503 until this is fixed.\n' +
+        '  Fix: run `gcloud auth application-default login` (then set the quota project),\n' +
+        '  or set GOOGLE_APPLICATION_CREDENTIALS to a service-account key file.\n' +
+        '  See docs/DEV_SETUP.md for details.'
+      );
+    } else {
+      console.error('[Spendly] Firestore connectivity probe failed:', e?.message || e);
+    }
+  }
 }
 
 startServer();
