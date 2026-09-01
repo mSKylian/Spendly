@@ -1,19 +1,44 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
-import { Trophy, ShoppingCart, Tv, Zap, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
+import { Trophy, ShoppingCart, Tv, Zap, Car, Utensils, Wifi, HeartPulse, Plane, Home, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
 import { SpendlyStore } from '../store';
 
 interface ChallengesProps {
   store: SpendlyStore;
 }
 
+// Icon for a challenge category — matched loosely on the (LLM-provided) name,
+// with a generic fallback so no category renders without an icon.
+function categoryIcon(category: string, size = 24) {
+  const key = category.toLowerCase();
+  if (key.includes('course') || key.includes('aliment') || key.includes('nourriture')) return <ShoppingCart size={size} />;
+  if (key.includes('abo') || key.includes('streaming')) return <Tv size={size} />;
+  if (key.includes('énergie') || key.includes('energie') || key.includes('électric')) return <Zap size={size} />;
+  if (key.includes('télécom') || key.includes('telecom') || key.includes('internet') || key.includes('mobile')) return <Wifi size={size} />;
+  if (key.includes('transport') || key.includes('auto') || key.includes('carburant')) return <Car size={size} />;
+  if (key.includes('restau') || key.includes('loisir')) return <Utensils size={size} />;
+  if (key.includes('santé') || key.includes('sante')) return <HeartPulse size={size} />;
+  if (key.includes('voyage')) return <Plane size={size} />;
+  if (key.includes('logement') || key.includes('loyer')) return <Home size={size} />;
+  return <Sparkles size={size} />;
+}
+
 export default function Challenges({ store }: ChallengesProps) {
   const { user, challenges, activateChallenge, executeAiAnalysis, isAiAnalyzing } = store;
-  const [filter, setFilter] = useState<'Tous' | 'IA' | 'Courses' | 'Abonnements' | 'Énergie'>('Tous');
+  const [filter, setFilter] = useState<string>('Tous');
 
   const activeChallengesCount = challenges.filter(c => c.status === 'in_progress').length;
   const potentialSavingsTotal = challenges.reduce((acc, c) => acc + (c.status !== 'completed' ? c.potentialSaving : 0), 0);
   const currentSavingsPercent = Math.round((challenges.filter(c => c.status === 'completed').length / (challenges.length || 1)) * 100);
+
+  // Filter pills derive from the categories actually present in the user's
+  // challenges (the LLM writes free-form names for now), not a hardcoded list.
+  const filters = useMemo(() => {
+    const cats = [...new Set(challenges.map(c => c.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+    const base = ['Tous'];
+    if (challenges.some(c => c.isAiGenerated)) base.push('IA');
+    return [...base, ...cats];
+  }, [challenges]);
 
   const filteredChallenges = challenges.filter(c => {
     if (filter === 'Tous') return true;
@@ -70,7 +95,7 @@ export default function Challenges({ store }: ChallengesProps) {
 
       {/* Filter Pills */}
       <nav className="flex gap-2 overflow-x-auto no-scrollbar pb-1 -mx-5 px-5">
-        {(['Tous', 'IA', 'Courses', 'Abonnements', 'Énergie'] as const).map((f) => (
+        {filters.map((f) => (
           <button 
             key={f} 
             onClick={() => setFilter(f)}
@@ -95,9 +120,7 @@ export default function Challenges({ store }: ChallengesProps) {
                 <div className="flex items-center gap-4">
                   <div className="relative">
                     <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${challenge.status === 'completed' ? 'bg-tertiary/10 text-tertiary' : 'bg-primary/5 text-primary'}`}>
-                      {challenge.category === 'Courses' && <ShoppingCart size={24} />}
-                      {challenge.category === 'Abonnements' && <Tv size={24} />}
-                      {challenge.category === 'Énergie' && <Zap size={24} />}
+                      {categoryIcon(challenge.category)}
                     </div>
                     <div className={`absolute -bottom-1 -right-1 text-[9px] px-1.5 py-0.5 rounded-full border-2 border-white font-bold
                       ${challenge.status === 'completed' ? 'bg-tertiary text-white' : 'bg-surface-container text-secondary'}`}>
@@ -167,10 +190,9 @@ export default function Challenges({ store }: ChallengesProps) {
               <div className="flex items-center gap-2">
                 {challenge.status === 'completed' ? <Trophy size={14} /> : <Sparkles size={14} />}
                 <span className="text-[10px] font-extrabold uppercase tracking-widest">
-                  {challenge.status === 'completed' ? `Gain : ${challenge.potentialSaving * 12}€ / an` : 
-                   challenge.id === '1' ? 'Récompense : 144€ / an' : 
-                   challenge.id === '2' ? 'Qualité HD Préservée' : 
-                   'Prédiction IA : Succès garanti'}
+                  {challenge.status === 'completed'
+                    ? `Gain : ${challenge.potentialSaving * 12}€ / an`
+                    : `Potentiel : ${challenge.potentialSaving * 12}€ / an`}
                 </span>
               </div>
               {challenge.status !== 'completed' && <ChevronRight size={14} className="opacity-40" />}

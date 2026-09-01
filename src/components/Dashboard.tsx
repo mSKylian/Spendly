@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
-import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference } from '../lib/finance';
+import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference, monthlySeries, transactionsForCategory, hexFromColorClass } from '../lib/finance';
 
 interface DashboardProps {
   store: SpendlyStore;
@@ -60,6 +60,37 @@ export default function Dashboard({ store }: DashboardProps) {
   const now = new Date();
   const isCurrentMonth = monthRef.getMonth() === now.getMonth() && monthRef.getFullYear() === now.getFullYear();
   const monthLabel = monthRef.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+
+  // Top categories by actual spend this month — every category present in the
+  // data, not just the seeded budget docs. Budget/color/icon meta joins in when
+  // a matching category doc exists.
+  const series = useMemo(() => monthlySeries(transactions, 6, monthRef), [transactions, monthRef]);
+  const topCategories = useMemo(() => {
+    const meta = new Map(categories.map(c => [c.name.toLowerCase(), c]));
+    return Object.entries(monthByCategory)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([key, spent]) => {
+        const c = meta.get(key);
+        return {
+          key,
+          name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
+          spent,
+          limit: c?.limit ?? 0,
+          colorClass: c?.colorClass ?? 'bg-slate-500',
+          color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
+          iconName: c?.iconName ?? 'shopping',
+          history: series.map(p => p.byCategory[key] || 0),
+        };
+      });
+  }, [monthByCategory, categories, series]);
+
+  const [drillDown, setDrillDown] = useState<string | null>(null);
+  const drillDownCat = topCategories.find(c => c.key === drillDown);
+  const drillDownTxs = useMemo(
+    () => (drillDown ? transactionsForCategory(transactions, drillDown, 'month', monthRef) : []),
+    [drillDown, transactions, monthRef]
+  );
 
   return (
     <div className="flex flex-col gap-8 pb-32">
@@ -279,26 +310,88 @@ export default function Dashboard({ store }: DashboardProps) {
           )}
         </div>
         <div className="grid grid-cols-2 gap-4">
-          {categories.map((cat) => {
-            const spent = monthByCategory[cat.name.toLowerCase()] || 0;
-            return (
-            <div key={cat.name} className="bg-surface-container-lowest p-5 rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)]">
-              <div className={`w-10 h-10 rounded-xl mb-3 flex items-center justify-center bg-opacity-10 ${cat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
-                {getIcon(cat.iconName)}
+          {topCategories.length === 0 && (
+            <p className="col-span-2 text-sm font-medium text-secondary text-center py-6">
+              Aucune dépense ce mois-ci.
+            </p>
+          )}
+          {topCategories.map((cat) => (
+            <button
+              key={cat.key}
+              onClick={() => setDrillDown(cat.key)}
+              className="bg-surface-container-lowest p-5 rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)] text-left transition-all active:scale-[0.98] hover:shadow-md"
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-opacity-10 ${cat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
+                  {getIcon(cat.iconName)}
+                </div>
+                <Sparkline values={cat.history} color={cat.color} />
               </div>
               <p className="text-[10px] uppercase font-bold text-secondary mb-0.5 tracking-wider">{cat.name}</p>
-              <p className="font-display font-extrabold text-lg">{spent.toLocaleString('fr-FR')}€</p>
+              <p className="font-display font-extrabold text-lg tabular-nums">{cat.spent.toLocaleString('fr-FR')}€</p>
               <div className="w-full h-1.5 bg-surface-container rounded-full mt-3 overflow-hidden">
                 <div
                   className={`h-full ${cat.colorClass}`}
-                  style={{ width: `${cat.limit > 0 ? Math.min(100, (spent / cat.limit) * 100) : 0}%` }}
+                  style={{ width: `${cat.limit > 0 ? Math.min(100, (cat.spent / cat.limit) * 100) : 0}%` }}
                 />
               </div>
-            </div>
-            );
-          })}
+            </button>
+          ))}
         </div>
       </section>
+
+      {/* Category Drill-down Sheet */}
+      <AnimatePresence>
+        {drillDownCat && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-end justify-center"
+            onClick={() => setDrillDown(null)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="bg-surface-container-lowest w-full max-w-lg rounded-t-3xl p-6 max-h-[75vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-opacity-10 ${drillDownCat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
+                    {getIcon(drillDownCat.iconName)}
+                  </div>
+                  <div>
+                    <h3 className="font-display font-extrabold text-lg leading-tight">{drillDownCat.name}</h3>
+                    <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">{monthLabel}</p>
+                  </div>
+                </div>
+                <button onClick={() => setDrillDown(null)} className="p-2 rounded-full hover:bg-surface-container">
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="font-display font-extrabold text-2xl mb-4 tabular-nums">
+                {drillDownCat.spent.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+              </p>
+              <div className="space-y-1">
+                {drillDownTxs.map((t) => (
+                  <div key={t.id} className="flex items-center justify-between py-2.5 border-b border-surface-container last:border-none">
+                    <div>
+                      <p className="font-bold text-sm">{t.name}</p>
+                      <p className="text-[10px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
+                    </div>
+                    <span className="font-display font-extrabold text-sm text-red-600 tabular-nums">
+                      {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Recent Transactions */}
       <section>
@@ -326,5 +419,24 @@ export default function Dashboard({ store }: DashboardProps) {
         </div>
       </section>
     </div>
+  );
+}
+
+// 6-month spend sparkline: emphasized endpoint, no axes — trend at a glance.
+function Sparkline({ values, color }: { values: number[]; color: string }) {
+  const max = Math.max(...values, 1);
+  const w = 56, h = 24, pad = 3;
+  const step = values.length > 1 ? (w - pad * 2) / (values.length - 1) : 0;
+  const points = values.map((v, i) => ({
+    x: pad + i * step,
+    y: h - pad - ((h - pad * 2) * v) / max,
+  }));
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const last = points[points.length - 1];
+  return (
+    <svg width={w} height={h} aria-hidden="true" className="opacity-90">
+      <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      {last && <circle cx={last.x} cy={last.y} r="3" fill={color} />}
+    </svg>
   );
 }

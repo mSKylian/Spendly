@@ -8,6 +8,13 @@ import {
   spentByCategory,
   usedPercent as computeUsedPercent,
   hexFromColorClass,
+  monthlySeries,
+  monthReference,
+  transactionsForCategory,
+  parseTxDate,
+  formatTxDate,
+  INCOME_COLOR,
+  SPEND_COLOR,
 } from '../lib/finance';
 
 interface StatsProps {
@@ -22,17 +29,68 @@ const PERIOD_MAP: Record<PeriodLabel, Period> = {
   'Année': 'year',
 };
 
+const MONTHS_SHOWN = 6;
+
 export default function Stats({ store }: StatsProps) {
   const { transactions, categories, user } = store;
   const [periodLabel, setPeriodLabel] = useState<PeriodLabel>('Mois');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedMonth, setSelectedMonth] = useState<Date | null>(null);
 
   const period = PERIOD_MAP[periodLabel];
 
+  // The chart window ends at the latest month that has data when that month is
+  // ahead of today (freshly imported statements), otherwise at the current month.
+  const chartAnchor = useMemo(() => {
+    const now = new Date();
+    let latest: Date | null = null;
+    for (const t of transactions) {
+      const d = parseTxDate(t.date);
+      if (d && (!latest || d > latest)) latest = d;
+    }
+    return latest && latest > now ? latest : now;
+  }, [transactions]);
+
+  const series = useMemo(
+    () => monthlySeries(transactions, MONTHS_SHOWN, chartAnchor),
+    [transactions, chartAnchor]
+  );
+
+  // Fixed categorical color assignment: order by total spend across the whole
+  // window so a category keeps its color regardless of the selected month.
+  const catMeta = useMemo(() => {
+    const meta = new Map(categories.map((c) => [c.name.toLowerCase(), c]));
+    const totals = new Map<string, number>();
+    for (const p of series) {
+      for (const [key, v] of Object.entries(p.byCategory)) {
+        totals.set(key, (totals.get(key) || 0) + v);
+      }
+    }
+    return [...totals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key]) => {
+        const c = meta.get(key);
+        return {
+          key,
+          name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
+          color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
+        };
+      });
+  }, [categories, series]);
+
+  // Reference date for the breakdown: the tapped month (month period only),
+  // defaulting to the month-with-data fallback used by the dashboard.
+  const monthRefDate = useMemo(
+    () => selectedMonth ?? monthReference(transactions),
+    [selectedMonth, transactions]
+  );
+  const refDate = useMemo(() => (period === 'month' ? monthRefDate : new Date()), [period, monthRefDate]);
+  const refLabel = monthRefDate.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+
   const data = useMemo(() => {
-    const spent = totalSpent(transactions, period);
+    const spent = totalSpent(transactions, period, refDate);
     const limit = user?.limits?.[period] ?? 0;
-    const byCat = spentByCategory(transactions, period);
+    const byCat = spentByCategory(transactions, period, refDate);
 
     // Build the breakdown from every category that actually has spend (keys of
     // byCat), not just the seeded budget categories — so it always sums to the
@@ -42,6 +100,7 @@ export default function Stats({ store }: StatsProps) {
       .map(([key, amount]) => {
         const c = meta.get(key);
         return {
+          key,
           name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
           amount,
           color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
@@ -60,7 +119,24 @@ export default function Stats({ store }: StatsProps) {
       spent,
       categories: cats,
     };
-  }, [transactions, categories, user, period]);
+  }, [transactions, categories, user, period, refDate]);
+
+  const drillDownTxs = useMemo(
+    () => (selectedCategory ? transactionsForCategory(transactions, selectedCategory, period, refDate) : []),
+    [selectedCategory, transactions, period, refDate]
+  );
+
+  const flowMax = Math.max(...series.map((p) => Math.max(p.income, p.spend)), 1);
+  const stackMax = Math.max(...series.map((p) => p.spend), 1);
+  const selectedPoint = series.find(
+    (p) => p.start.getMonth() === monthRefDate.getMonth() && p.start.getFullYear() === monthRefDate.getFullYear()
+  );
+
+  const selectMonth = (start: Date) => {
+    setSelectedMonth(start);
+    setSelectedCategory(null);
+    setPeriodLabel('Mois');
+  };
 
   return (
     <div className="flex flex-col gap-8 pb-32">
@@ -78,10 +154,105 @@ export default function Stats({ store }: StatsProps) {
         ))}
       </div>
 
+      {/* Income vs Spend */}
+      <section className="bg-surface-container-lowest rounded-2xl p-6 shadow-[0px_4px_20px_rgba(0,0,0,0.04)]">
+        <div className="flex justify-between items-baseline mb-1">
+          <h2 className="font-display font-extrabold text-base">Revenus vs Dépenses</h2>
+          <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-secondary">
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: INCOME_COLOR }} />Revenus</span>
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: SPEND_COLOR }} />Dépenses</span>
+          </div>
+        </div>
+        {selectedPoint && (
+          <p className="text-[11px] font-bold text-secondary mb-3 tabular-nums">
+            {refLabel} : +{selectedPoint.income.toLocaleString('fr-FR')} € / −{selectedPoint.spend.toLocaleString('fr-FR')} €
+            <span className={`ml-2 ${selectedPoint.income - selectedPoint.spend >= 0 ? 'text-primary' : 'text-red-600'}`}>
+              (net {(selectedPoint.income - selectedPoint.spend >= 0 ? '+' : '') + (selectedPoint.income - selectedPoint.spend).toLocaleString('fr-FR')} €)
+            </span>
+          </p>
+        )}
+        <div className="flex items-end justify-between gap-2 h-32 mt-2">
+          {series.map((p) => {
+            const isSel = selectedPoint?.key === p.key;
+            return (
+              <button
+                key={p.key}
+                onClick={() => selectMonth(p.start)}
+                className="flex-1 flex flex-col items-center gap-1.5 group"
+                aria-label={`${p.label} : revenus ${Math.round(p.income)} €, dépenses ${Math.round(p.spend)} €`}
+              >
+                <div className={`w-full flex items-end justify-center gap-[3px] h-24 rounded-lg px-1 transition-colors ${isSel ? 'bg-primary/5' : 'group-hover:bg-surface-container'}`}>
+                  <div
+                    className="w-2.5 rounded-t-[4px] transition-all"
+                    style={{ height: `${Math.max((p.income / flowMax) * 100, p.income > 0 ? 4 : 0)}%`, backgroundColor: INCOME_COLOR }}
+                  />
+                  <div
+                    className="w-2.5 rounded-t-[4px] transition-all"
+                    style={{ height: `${Math.max((p.spend / flowMax) * 100, p.spend > 0 ? 4 : 0)}%`, backgroundColor: SPEND_COLOR }}
+                  />
+                </div>
+                <span className={`text-[9px] font-extrabold uppercase ${isSel ? 'text-primary' : 'text-secondary opacity-70'}`}>{p.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Monthly spend trend, stacked by category */}
+      <section className="bg-surface-container-lowest rounded-2xl p-6 shadow-[0px_4px_20px_rgba(0,0,0,0.04)]">
+        <h2 className="font-display font-extrabold text-base mb-1">Tendance des dépenses</h2>
+        <p className="text-[10px] uppercase font-bold text-secondary tracking-wider mb-3">Par catégorie · toucher un mois pour le détailler</p>
+        <div className="flex items-end justify-between gap-2 h-36">
+          {series.map((p) => {
+            const isSel = selectedPoint?.key === p.key;
+            return (
+              <button
+                key={p.key}
+                onClick={() => selectMonth(p.start)}
+                className="flex-1 flex flex-col items-center gap-1.5 group"
+                aria-label={`${p.label} : ${Math.round(p.spend)} € dépensés`}
+              >
+                <div className={`w-full flex flex-col-reverse items-center h-28 rounded-lg px-1 pt-1 transition-colors ${isSel ? 'bg-primary/5' : 'group-hover:bg-surface-container'}`}>
+                  {catMeta.map((c) => {
+                    const v = p.byCategory[c.key] || 0;
+                    if (v <= 0) return null;
+                    return (
+                      <div
+                        key={c.key}
+                        className="w-3.5 first:rounded-b-none last:rounded-t-[4px]"
+                        style={{
+                          height: `${(v / stackMax) * 100}%`,
+                          backgroundColor: c.color,
+                          marginTop: 2, // 2px surface gap between stacked segments
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+                <span className={`text-[9px] font-extrabold uppercase ${isSel ? 'text-primary' : 'text-secondary opacity-70'}`}>{p.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1.5 mt-4 pt-3 border-t border-surface-container">
+          {catMeta.map((c) => (
+            <span key={c.key} className="flex items-center gap-1.5 text-[10px] font-bold text-secondary">
+              <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: c.color }} />
+              {c.name}
+            </span>
+          ))}
+        </div>
+      </section>
+
       {/* Global Budget Card */}
       <section className="bg-surface-container-lowest rounded-2xl p-6 shadow-[0px_4px_20px_rgba(0,0,0,0.04)] flex flex-col items-center gap-6">
         <div className="w-full flex justify-between items-start">
-          <h2 className="font-display font-extrabold text-base">Budget Global</h2>
+          <div>
+            <h2 className="font-display font-extrabold text-base">Budget Global</h2>
+            {period === 'month' && (
+              <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">{refLabel}</p>
+            )}
+          </div>
           <Info className="text-primary hover:scale-110 transition-transform cursor-pointer" size={20} />
         </div>
 
@@ -139,7 +310,12 @@ export default function Stats({ store }: StatsProps) {
 
       {/* Breakdown List */}
       <section>
-        <h2 className="font-display font-extrabold text-lg mb-4">Répartition par catégorie</h2>
+        <div className="flex items-baseline gap-2 mb-4">
+          <h2 className="font-display font-extrabold text-lg">Répartition par catégorie</h2>
+          {period === 'month' && (
+            <span className="text-[10px] uppercase font-bold text-secondary tracking-wider">{refLabel}</span>
+          )}
+        </div>
         <div className="bg-surface-container-lowest rounded-2xl p-4 shadow-[0px_4px_20px_rgba(0,0,0,0.04)] space-y-2">
           {data.categories.length === 0 && (
             <p className="text-sm font-medium text-secondary text-center py-6">
@@ -149,37 +325,54 @@ export default function Stats({ store }: StatsProps) {
           <AnimatePresence mode="popLayout">
             {data.categories.map((cat) => (
               <motion.div
-                key={cat.name}
+                key={cat.key}
                 layout
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
-                onClick={() => setSelectedCategory(selectedCategory === cat.name ? null : cat.name)}
-                className={`flex items-center justify-between p-3 rounded-xl transition-all group cursor-pointer ${
-                  selectedCategory === cat.name ? 'bg-primary/5 ring-1 ring-primary/20' : 'hover:bg-surface-container-low'
+                className={`rounded-xl transition-all ${
+                  selectedCategory === cat.key ? 'bg-primary/5 ring-1 ring-primary/20' : 'hover:bg-surface-container-low'
                 }`}
               >
-                <div className="flex items-center gap-4">
-                  <div className="w-3.5 h-3.5 rounded-full" style={{ backgroundColor: cat.color }} />
-                  <div className="flex flex-col">
-                    <span className="font-bold text-sm tracking-tight">{cat.name}</span>
-                    <span className="text-[10px] font-bold text-secondary uppercase tracking-tighter opacity-60">{cat.percent}% du total</span>
+                <div
+                  onClick={() => setSelectedCategory(selectedCategory === cat.key ? null : cat.key)}
+                  className="flex items-center justify-between p-3 group cursor-pointer"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-3.5 h-3.5 rounded-full" style={{ backgroundColor: cat.color }} />
+                    <div className="flex flex-col">
+                      <span className="font-bold text-sm tracking-tight">{cat.name}</span>
+                      <span className="text-[10px] font-bold text-secondary uppercase tracking-tighter opacity-60">{cat.percent}% du total</span>
+                    </div>
                   </div>
-                </div>
-                <div className="flex flex-col items-end">
-                  <span className="font-display font-extrabold text-sm group-hover:scale-110 transition-transform">
+                  <span className="font-display font-extrabold text-sm group-hover:scale-110 transition-transform tabular-nums">
                     {cat.amount.toLocaleString('fr-FR')} €
                   </span>
-                  {selectedCategory === cat.name && (
-                    <motion.span
+                </div>
+                <AnimatePresence>
+                  {selectedCategory === cat.key && (
+                    <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
-                      className="text-[9px] font-bold text-primary uppercase mt-1"
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
                     >
-                      Détails actifs
-                    </motion.span>
+                      <div className="px-3 pb-3 pt-1 space-y-0.5">
+                        {drillDownTxs.map((t) => (
+                          <div key={t.id} className="flex items-center justify-between py-2 pl-7 border-t border-surface-container first:border-t-0">
+                            <div>
+                              <p className="font-bold text-xs">{t.name}</p>
+                              <p className="text-[9px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
+                            </div>
+                            <span className="font-display font-extrabold text-xs text-red-600 tabular-nums">
+                              {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
                   )}
-                </div>
+                </AnimatePresence>
               </motion.div>
             ))}
           </AnimatePresence>

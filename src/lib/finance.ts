@@ -121,26 +121,102 @@ export function monthReference(transactions: Transaction[], now: Date = new Date
   return best?.ref ?? now;
 }
 
+/** One month of derived series data. `key` is 'YYYY-MM'; spend excludes income. */
+export interface MonthPoint {
+  key: string;
+  label: string;      // e.g. 'nov.' — short fr-FR month
+  start: Date;
+  spend: number;      // total expenses (positive magnitude)
+  income: number;     // total credits
+  byCategory: Record<string, number>; // expenses per lower-cased category
+}
+
+function monthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Per-month spend/income series for the `months` calendar months ending at the
+ * month of `now` (inclusive), oldest first. Derived purely from transactions.
+ */
+export function monthlySeries(
+  transactions: Transaction[],
+  months: number,
+  now: Date = new Date()
+): MonthPoint[] {
+  const points: MonthPoint[] = [];
+  const byKey = new Map<string, MonthPoint>();
+  for (let i = months - 1; i >= 0; i--) {
+    const start = periodStart('month', now);
+    start.setMonth(start.getMonth() - i);
+    const point: MonthPoint = {
+      key: monthKey(start),
+      label: start.toLocaleDateString('fr-FR', { month: 'short' }),
+      start,
+      spend: 0,
+      income: 0,
+      byCategory: {},
+    };
+    points.push(point);
+    byKey.set(point.key, point);
+  }
+  for (const t of transactions) {
+    const d = parseTxDate(t.date);
+    if (!d) continue;
+    const point = byKey.get(monthKey(d));
+    if (!point) continue;
+    if (t.amount > 0) {
+      point.income += t.amount;
+    } else {
+      const spent = expenseAmount(t);
+      point.spend += spent;
+      const key = t.category.toLowerCase();
+      point.byCategory[key] = (point.byCategory[key] || 0) + spent;
+    }
+  }
+  return points;
+}
+
+/** Expense transactions of one category (lower-cased key) within the period. */
+export function transactionsForCategory(
+  transactions: Transaction[],
+  categoryKey: string,
+  period: Period,
+  now: Date = new Date()
+): Transaction[] {
+  return transactionsInPeriod(transactions, period, now)
+    .filter((t) => t.amount < 0 && t.category.toLowerCase() === categoryKey)
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
 /** Round a percentage to an integer, clamped to [0, 100]; safe for zero limits. */
 export function usedPercent(spent: number, limit: number): number {
   if (!limit || limit <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((spent / limit) * 100)));
 }
 
-/** Map a Tailwind background class to a hex color for chart marks. */
+/**
+ * Map a Tailwind background class to a hex color for chart marks.
+ * Hexes are chart-tuned (validated for CVD separation and lightness on the
+ * app surface), so they differ slightly from the raw Tailwind values.
+ */
 export function hexFromColorClass(colorClass: string): string {
   const map: Record<string, string> = {
-    'bg-orange-500': '#f97316',
+    'bg-orange-500': '#ea700d',
     'bg-purple-500': '#a855f7',
     'bg-blue-500': '#3b82f6',
-    'bg-teal-500': '#14b8a6',
-    'bg-green-500': '#22c55e',
-    'bg-red-500': '#ef4444',
-    'bg-yellow-500': '#eab308',
+    'bg-teal-500': '#0d9488',
+    'bg-green-500': '#16a34a',
+    'bg-red-500': '#dc2626',
+    'bg-yellow-500': '#ca8a04',
     'bg-pink-500': '#ec4899',
   };
   return map[colorClass] || '#57605f';
 }
+
+/** Chart colors for the income-vs-spend comparison (validated pair). */
+export const INCOME_COLOR = '#0f9d6b';
+export const SPEND_COLOR = '#c2410c';
 
 /** Format a stored transaction date for display in fr-FR (falls back to raw). */
 export function formatTxDate(dateStr: string): string {
