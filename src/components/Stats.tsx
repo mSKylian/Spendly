@@ -17,8 +17,12 @@ import {
   INCOME_COLOR,
   SPEND_COLOR,
 } from '../lib/finance';
-import { rollupSlug, displayMeta, SYSTEM_CATEGORIES, CategorySlug } from '../lib/taxonomy';
+import { rollupSlug, displayMeta, SYSTEM_CATEGORIES, isCustomSlug, MAX_CUSTOM_CATEGORIES } from '../lib/taxonomy';
 import type { Transaction } from '../types';
+import { Plus } from 'lucide-react';
+
+const CUSTOM_COLOR_OPTIONS = ['bg-orange-500', 'bg-pink-500', 'bg-blue-500', 'bg-teal-500', 'bg-purple-500', 'bg-yellow-500'];
+const CUSTOM_ICON_OPTIONS = ['package', 'heart', 'music', 'car', 'shopping-bag', 'home'];
 
 interface StatsProps {
   store: SpendlyStore;
@@ -35,11 +39,22 @@ const PERIOD_MAP: Record<PeriodLabel, Period> = {
 const MONTHS_SHOWN = 6;
 
 export default function Stats({ store }: StatsProps) {
-  const { transactions, categories, user, recategorizeTransaction } = store;
+  const { transactions, categories, user, recategorizeTransaction, addCustomCategory } = store;
   const tier = user?.tier ?? 'free';
   // Slug-keyed grouping, rolled up to 4 groups + Autre on free tier.
   const keyOf = useMemo(() => (t: Transaction) => rollupSlug(effectiveSlug(t), tier), [tier]);
+  // User-created categories (pro): docs whose id is a custom_* slug. Their
+  // display metadata overrides the static taxonomy lookup.
+  const customCats = useMemo(() => categories.filter(c => c.id && isCustomSlug(c.id)), [categories]);
+  const metaFor = useMemo(() => (key: string) => {
+    const custom = customCats.find(c => c.id === key);
+    return custom
+      ? { name: custom.name, colorClass: custom.colorClass, iconName: custom.iconName }
+      : displayMeta(key, tier);
+  }, [customCats, tier]);
   const [periodLabel, setPeriodLabel] = useState<PeriodLabel>('Mois');
+  const [showAddCat, setShowAddCat] = useState(false);
+  const [newCat, setNewCat] = useState({ name: '', colorClass: CUSTOM_COLOR_OPTIONS[0], iconName: CUSTOM_ICON_OPTIONS[0], limit: '' });
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<Date | null>(null);
 
@@ -74,10 +89,10 @@ export default function Stats({ store }: StatsProps) {
     return [...totals.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([key]) => {
-        const meta = displayMeta(key, tier);
+        const meta = metaFor(key);
         return { key, name: meta.name, color: hexFromColorClass(meta.colorClass) };
       });
-  }, [series, tier]);
+  }, [series, metaFor]);
 
   // Reference date for the breakdown: the tapped month (month period only),
   // defaulting to the month-with-data fallback used by the dashboard.
@@ -97,7 +112,7 @@ export default function Stats({ store }: StatsProps) {
     // sums to the total; display metadata comes from the taxonomy.
     const cats = Object.entries(byCat)
       .map(([key, amount]) => {
-        const meta = displayMeta(key, tier);
+        const meta = metaFor(key);
         return { key, name: meta.name, amount, color: hexFromColorClass(meta.colorClass) };
       })
       .filter((c) => c.amount > 0)
@@ -113,7 +128,7 @@ export default function Stats({ store }: StatsProps) {
       spent,
       categories: cats,
     };
-  }, [transactions, user, period, refDate, keyOf, tier]);
+  }, [transactions, user, period, refDate, keyOf, metaFor]);
 
   const drillDownTxs = useMemo(
     () => (selectedCategory ? transactionsForCategory(transactions, selectedCategory, period, refDate, keyOf) : []),
@@ -364,13 +379,16 @@ export default function Stats({ store }: StatsProps) {
                                 // enforced server-side by Firestore rules).
                                 <select
                                   value={effectiveSlug(t)}
-                                  onChange={(e) => recategorizeTransaction(t.id, e.target.value as CategorySlug)}
+                                  onChange={(e) => recategorizeTransaction(t.id, e.target.value)}
                                   onClick={(e) => e.stopPropagation()}
                                   className="text-[9px] font-bold uppercase bg-surface-container rounded-lg px-1.5 py-1 outline-none max-w-[110px]"
                                   title="Recatégoriser"
                                 >
                                   {SYSTEM_CATEGORIES.filter((c) => !c.isIncome).map((c) => (
                                     <option key={c.id} value={c.id}>{c.name}</option>
+                                  ))}
+                                  {customCats.map((c) => (
+                                    <option key={c.id} value={c.id!}>{c.name}</option>
                                   ))}
                                 </select>
                               ) : (
@@ -392,6 +410,70 @@ export default function Stats({ store }: StatsProps) {
             ))}
           </AnimatePresence>
         </div>
+
+        {/* Custom categories — pro only, capped */}
+        {tier === 'pro' && customCats.length < MAX_CUSTOM_CATEGORIES && (
+          <div className="mt-3">
+            {!showAddCat ? (
+              <button
+                onClick={() => setShowAddCat(true)}
+                className="flex items-center gap-2 text-[10px] font-extrabold uppercase tracking-wider text-primary px-3 py-2 rounded-xl hover:bg-primary/5 transition-colors"
+              >
+                <Plus size={14} /> Nouvelle catégorie
+              </button>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  await addCustomCategory(newCat.name, newCat.colorClass, newCat.iconName, Number(newCat.limit) || 0);
+                  setNewCat({ name: '', colorClass: CUSTOM_COLOR_OPTIONS[0], iconName: CUSTOM_ICON_OPTIONS[0], limit: '' });
+                  setShowAddCat(false);
+                }}
+                className="bg-surface-container-lowest rounded-2xl p-4 shadow-[0px_4px_20px_rgba(0,0,0,0.04)] flex flex-col gap-3"
+              >
+                <div className="flex gap-2">
+                  <input
+                    value={newCat.name}
+                    onChange={(e) => setNewCat({ ...newCat, name: e.target.value })}
+                    placeholder="Nom (ex: Animaux)"
+                    maxLength={50}
+                    required
+                    className="flex-[2] bg-surface-container p-2.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none"
+                  />
+                  <input
+                    value={newCat.limit}
+                    onChange={(e) => setNewCat({ ...newCat, limit: e.target.value })}
+                    placeholder="Budget €/mois"
+                    type="number"
+                    min="0"
+                    className="flex-1 bg-surface-container p-2.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none"
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex gap-1.5">
+                    {CUSTOM_COLOR_OPTIONS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setNewCat({ ...newCat, colorClass: c })}
+                        className={`w-6 h-6 rounded-full ${c} transition-transform ${newCat.colorClass === c ? 'ring-2 ring-offset-2 ring-primary scale-110' : 'opacity-60'}`}
+                        aria-label={`Couleur ${c}`}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setShowAddCat(false)} className="text-[10px] font-extrabold uppercase text-secondary px-3 py-2">
+                      Annuler
+                    </button>
+                    <button type="submit" className="bg-primary text-white text-[10px] font-extrabold uppercase tracking-wider px-4 py-2 rounded-xl active:scale-95 transition-all">
+                      Créer
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Insight Tip */}

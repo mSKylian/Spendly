@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { Trophy, ShoppingCart, Tv, Zap, Car, Utensils, Wifi, HeartPulse, Plane, Home, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import { categoryById } from '../lib/taxonomy';
+import { verifyChallengeSaving } from '../lib/finance';
 import type { Challenge } from '../types';
 
 interface ChallengesProps {
@@ -31,8 +32,27 @@ function categoryIcon(category: string, size = 24) {
 }
 
 export default function Challenges({ store }: ChallengesProps) {
-  const { user, challenges, activateChallenge, executeAiAnalysis, isAiAnalyzing } = store;
+  const { user, challenges, transactions, activateChallenge, executeAiAnalysis, isAiAnalyzing } = store;
   const [filter, setFilter] = useState<string>('Tous');
+
+  // Data-verified savings: compare the category's real monthly spend before vs
+  // after completion (lib/finance.verifyChallengeSaving). Null = pending.
+  const verifications = useMemo(() => {
+    const out = new Map<string, ReturnType<typeof verifyChallengeSaving>>();
+    for (const c of challenges) {
+      if (c.status === 'completed' && c.categoryId && c.completedAt) {
+        out.set(c.id, verifyChallengeSaving(transactions, c.categoryId, c.completedAt));
+      }
+    }
+    return out;
+  }, [challenges, transactions]);
+
+  const completedFooter = (c: Challenge): string => {
+    const v = verifications.get(c.id);
+    if (v == null) return `Gain estimé : ${c.potentialSaving * 12}€ / an · vérification au prochain mois complet`;
+    if (v.monthlyDelta > 0) return `Vérifié : ${v.monthlyDelta.toLocaleString('fr-FR')}€ / mois réellement économisés`;
+    return `Suivi : pas encore d'économie mesurée sur cette catégorie`;
+  };
 
   const activeChallengesCount = challenges.filter(c => c.status === 'in_progress').length;
   const potentialSavingsTotal = challenges.reduce((acc, c) => acc + (c.status !== 'completed' ? c.potentialSaving : 0), 0);
@@ -198,7 +218,7 @@ export default function Challenges({ store }: ChallengesProps) {
                 {challenge.status === 'completed' ? <Trophy size={14} /> : <Sparkles size={14} />}
                 <span className="text-[10px] font-extrabold uppercase tracking-widest">
                   {challenge.status === 'completed'
-                    ? `Gain : ${challenge.potentialSaving * 12}€ / an`
+                    ? completedFooter(challenge)
                     : `Potentiel : ${challenge.potentialSaving * 12}€ / an`}
                 </span>
               </div>

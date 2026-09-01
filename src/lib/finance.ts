@@ -1,5 +1,5 @@
 import { Transaction } from '../types';
-import { CategorySlug, CategorySource, isValidSlug, slugFromLegacy, categoryById } from './taxonomy';
+import { CategorySlug, CategorySource, isValidSlug, isKnownSlug, slugFromLegacy, categoryById } from './taxonomy';
 
 // A single source of truth for money math so every page derives the same
 // numbers from the same data (transactions), instead of divergent stored fields.
@@ -8,8 +8,8 @@ import { CategorySlug, CategorySource, isValidSlug, slugFromLegacy, categoryById
  * Authoritative category slug of a transaction: `categoryId` when present and
  * valid, otherwise mapped from the legacy free-string `category`.
  */
-export function effectiveSlug(t: Pick<Transaction, 'category' | 'categoryId'>): CategorySlug {
-  return t.categoryId && isValidSlug(t.categoryId) ? t.categoryId : slugFromLegacy(t.category);
+export function effectiveSlug(t: Pick<Transaction, 'category' | 'categoryId'>): string {
+  return t.categoryId && isKnownSlug(t.categoryId) ? t.categoryId : slugFromLegacy(t.category);
 }
 
 /** Default grouping key for selectors: the effective taxonomy slug. */
@@ -238,6 +238,63 @@ export function hexFromColorClass(colorClass: string): string {
 /** Chart colors for the income-vs-spend comparison (validated pair). */
 export const INCOME_COLOR = '#0f9d6b';
 export const SPEND_COLOR = '#c2410c';
+
+export interface SavingVerification {
+  monthlyDelta: number;   // >0 = actual monthly saving vs before, <0 = spend went up
+  beforeAvg: number;      // avg monthly category spend before completion
+  afterAvg: number;       // avg monthly category spend after completion
+  monthsAfter: number;    // full months measured after completion
+}
+
+/**
+ * Data-verified challenge saving: compare a category's average monthly spend
+ * in the (up to 3) full months before the challenge was completed with the
+ * full months after. Returns null while there is no complete month after
+ * completion to measure — "verification pending".
+ */
+export function verifyChallengeSaving(
+  transactions: Transaction[],
+  categoryId: string,
+  completedAt: string,
+  now: Date = new Date()
+): SavingVerification | null {
+  const completed = parseTxDate(completedAt);
+  if (!completed) return null;
+
+  // Full calendar months strictly after the completion month, up to now.
+  const firstAfter = periodStart('month', completed);
+  firstAfter.setMonth(firstAfter.getMonth() + 1);
+  const currentMonthStart = periodStart('month', now);
+  const monthsAfter: Date[] = [];
+  for (const d = new Date(firstAfter); d < currentMonthStart && monthsAfter.length < 6; d.setMonth(d.getMonth() + 1)) {
+    monthsAfter.push(new Date(d));
+  }
+  if (monthsAfter.length === 0) return null;
+
+  const monthsBefore: Date[] = [];
+  for (let i = 1; i <= 3; i++) {
+    const d = periodStart('month', completed);
+    d.setMonth(d.getMonth() - i);
+    monthsBefore.push(d);
+  }
+
+  const spendIn = (monthStart: Date) =>
+    spentByCategory(transactions, 'month', monthStart)[categoryId] || 0;
+
+  // Only count "before" months that actually have data for a fair baseline.
+  const beforeValues = monthsBefore.map(spendIn).filter((v) => v > 0);
+  if (beforeValues.length === 0) return null;
+
+  const beforeAvg = beforeValues.reduce((s, v) => s + v, 0) / beforeValues.length;
+  const afterAvg = monthsAfter.map(spendIn).reduce((s, v) => s + v, 0) / monthsAfter.length;
+
+  return {
+    monthlyDelta: Math.round((beforeAvg - afterAvg) * 100) / 100,
+    beforeAvg: Math.round(beforeAvg * 100) / 100,
+    afterAvg: Math.round(afterAvg * 100) / 100,
+    monthsAfter: monthsAfter.length,
+  };
+}
 
 /** Format a stored transaction date for display in fr-FR (falls back to raw). */
 export function formatTxDate(dateStr: string): string {

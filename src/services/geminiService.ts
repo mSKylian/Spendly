@@ -19,9 +19,19 @@ export async function analyzeSpending(
         hash |= 0;
     }
 
+    // The server reduces this to an aggregate digest (per-category monthly
+    // totals, top merchants, recurring payments) before calling the LLM —
+    // date and categoryId are what the digest needs.
     const payload = {
       transactionsHash: hash.toString(),
-      transactions: transactions.map(t => ({ name: t.name, amount: t.amount, category: t.category, accountId: t.accountId }))
+      transactions: transactions.slice(0, 600).map(t => ({
+        name: t.name,
+        amount: t.amount,
+        date: t.date,
+        category: t.category,
+        categoryId: t.categoryId,
+        accountId: t.accountId
+      }))
     };
 
     const res = await fetch('/api/analyze', {

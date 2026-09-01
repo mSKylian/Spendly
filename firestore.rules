@@ -85,8 +85,9 @@ service cloud.firestore {
 
     function isValidChallenge(data) {
       return data.keys().hasAll(['title', 'subtitle', 'description', 'potentialSaving', 'status', 'category', 'level'])
-        && (data.keys().size() >= 7 && data.keys().size() <= 11)
+        && (data.keys().size() >= 7 && data.keys().size() <= 13)
         && (!data.keys().hasAll(['categoryId']) || isCategorySlug(data.categoryId))
+        && (!data.keys().hasAll(['completedAt']) || (data.completedAt is string && data.completedAt.size() <= 50))
         && data.title is string && data.title.size() <= 100
         && data.subtitle is string && data.subtitle.size() <= 100
         && data.description is string && data.description.size() <= 500
@@ -145,8 +146,11 @@ service cloud.firestore {
 
       match /categories/{categoryId} {
         allow list, get: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidCategory(incoming()) && isValidId(categoryId);
+        // custom_* docs are user-created categories — a pro feature.
+        allow create: if isOwner(userId) && isValidCategory(incoming()) && isValidId(categoryId)
+          && (!categoryId.matches('^custom_.*') || isPro(userId));
         allow update: if isOwner(userId) && isValidCategory(incoming());
+        allow delete: if isOwner(userId) && categoryId.matches('^custom_.*') && isPro(userId);
       }
 
       match /challenges/{challengeId} {

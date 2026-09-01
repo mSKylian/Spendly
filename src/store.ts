@@ -28,7 +28,7 @@ import { auth, db, handleFirestoreError, OperationType } from './firebase';
 import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement, MerchantRule } from './types';
 import { analyzeSpending } from './services/geminiService';
 import { toISODate, categorizeImport, effectiveSlug } from './lib/finance';
-import { CategorySlug, categoryById, normalizeLabel, merchantRuleId } from './lib/taxonomy';
+import { categoryById, isCustomSlug, isKnownSlug, normalizeLabel, merchantRuleId, customSlugFor, MAX_CUSTOM_CATEGORIES } from './lib/taxonomy';
 
 export type SpendlyStore = {
   balance: number; // derived: sum of account balances (== totalAssets)
@@ -54,7 +54,9 @@ export type SpendlyStore = {
   executeAiAnalysis: () => Promise<void>;
   // Pro only (enforced by Firestore rules): reassign a transaction's category
   // and optionally learn a merchant rule from it.
-  recategorizeTransaction: (txId: string, categoryId: CategorySlug, learnRule?: boolean) => Promise<void>;
+  recategorizeTransaction: (txId: string, categoryId: string, learnRule?: boolean) => Promise<void>;
+  // Pro only: create a user-defined category (custom_* slug, capped).
+  addCustomCategory: (name: string, colorClass: string, iconName: string, limit: number) => Promise<string | void>;
 };
 
 const DEFAULT_CATEGORIES: Omit<CategoryBudget, 'id'>[] = [
@@ -531,7 +533,8 @@ export function useSpendlyStore(): SpendlyStore {
       } else if (challenge.status === 'in_progress') {
         // Completing a challenge is a gamification milestone only — it never credits
         // real money. "Total saved" is derived from completed challenges for display.
-        await updateDoc(doc(db, path), { status: 'completed', progress: 100 });
+        // completedAt anchors the data-verified saving check (lib/finance).
+        await updateDoc(doc(db, path), { status: 'completed', progress: 100, completedAt: new Date().toISOString() });
       }
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, path);
@@ -572,10 +575,12 @@ export function useSpendlyStore(): SpendlyStore {
   // Pro only — Firestore rules reject categorySource 'user' and merchantRules
   // writes for free users. Reassigns the category and (by default) learns a
   // merchant rule so future imports of the same label are classified the same.
-  const recategorizeTransaction = async (txId: string, categoryId: CategorySlug, learnRule = true) => {
-    if (!fbUser || user?.tier !== 'pro') return;
+  const recategorizeTransaction = async (txId: string, categoryId: string, learnRule = true) => {
+    if (!fbUser || user?.tier !== 'pro' || !isKnownSlug(categoryId)) return;
     const userId = fbUser.uid;
-    const meta = categoryById(categoryId);
+    // System slugs resolve from the taxonomy; custom slugs from the user's docs.
+    const meta = categoryById(categoryId)
+      ?? (isCustomSlug(categoryId) ? categories.find(c => c.id === categoryId) : undefined);
     if (!meta) return;
     try {
       await updateDoc(doc(db, 'users', userId, 'transactions', txId), {
@@ -597,6 +602,28 @@ export function useSpendlyStore(): SpendlyStore {
       }
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions/${txId}`);
+    }
+  };
+
+  // Pro only — creates categories/{custom_slug} (rules gate custom_* ids on
+  // tier). Capped client-side at MAX_CUSTOM_CATEGORIES.
+  const addCustomCategory = async (name: string, colorClass: string, iconName: string, limit: number) => {
+    if (!fbUser || user?.tier !== 'pro' || !name.trim()) return;
+    const customCount = categories.filter(c => c.id && isCustomSlug(c.id)).length;
+    if (customCount >= MAX_CUSTOM_CATEGORIES) return;
+    const slug = customSlugFor(name);
+    const userId = fbUser.uid;
+    try {
+      await setDoc(doc(db, 'users', userId, 'categories', slug), {
+        name: name.trim().slice(0, 50),
+        spent: 0, // legacy field required by rules; derived at read time
+        limit: Math.max(0, Number(limit) || 0),
+        colorClass,
+        iconName,
+      });
+      return slug;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/categories/${slug}`);
     }
   };
 
@@ -626,7 +653,8 @@ export function useSpendlyStore(): SpendlyStore {
     seedMockData,
     scanReceipt,
     executeAiAnalysis,
-    recategorizeTransaction
+    recategorizeTransaction,
+    addCustomCategory
   };
 }
 

@@ -4,7 +4,7 @@ import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Clo
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
 import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference, monthlySeries, transactionsForCategory, hexFromColorClass, effectiveSlug } from '../lib/finance';
-import { rollupSlug, displayMeta, slugFromLegacy } from '../lib/taxonomy';
+import { rollupSlug, displayMeta, slugFromLegacy, isCustomSlug } from '../lib/taxonomy';
 import type { Transaction } from '../types';
 
 interface DashboardProps {
@@ -75,12 +75,17 @@ export default function Dashboard({ store }: DashboardProps) {
   // taxonomy; budgets join from the user's category docs via their legacy name.
   const series = useMemo(() => monthlySeries(transactions, 6, monthRef, keyOf), [transactions, monthRef, keyOf]);
   const topCategories = useMemo(() => {
-    const budgetBySlug = new Map(categories.map(c => [slugFromLegacy(c.name), c.limit]));
+    // Budget joins: custom docs by their slug id, system docs via legacy name.
+    const budgetBySlug = new Map(categories.map(c => [c.id && isCustomSlug(c.id) ? c.id : slugFromLegacy(c.name), c.limit]));
+    const customMeta = new Map(categories.filter(c => c.id && isCustomSlug(c.id)).map(c => [c.id!, c]));
     return Object.entries(monthByCategory)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([key, spent]) => {
-        const meta = displayMeta(key, tier);
+        const custom = customMeta.get(key);
+        const meta = custom
+          ? { name: custom.name, colorClass: custom.colorClass, iconName: custom.iconName }
+          : displayMeta(key, tier);
         return {
           key,
           name: meta.name,

@@ -10,6 +10,7 @@ import OpenAI from "openai";
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import { CATEGORY_SLUGS, isValidSlug, slugFromLegacy, categoryById } from './src/lib/taxonomy';
+import { buildSpendingDigest } from './src/lib/digest';
 
 // Closed category enum for every LLM prompt: the model classifies against the
 // taxonomy, it never invents category names (docs/CATEGORY_ENGINE.md).
@@ -603,10 +604,9 @@ async function startServer() {
         return res.json({ insight: "L'analyse IA est actuellement désactivée par l'administrateur.", newChallenges: [] });
       }
       
-      const maxTx = config?.maxTransactions || 50;
-      if (transactions.length > maxTx) {
-        transactions = transactions.slice(0, maxTx);
-      }
+      // The LLM receives a compact digest, not the raw list, so the cap only
+      // bounds digest computation — maxTransactions no longer limits it.
+      transactions = (transactions || []).slice(0, 600);
       
       // 1. Check cache cache
       const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
@@ -671,11 +671,21 @@ async function startServer() {
           baseURL: baseURL
         });
 
+        // Digest-fed analysis: aggregates + deterministic recurring detection
+        // (src/lib/digest.ts) instead of a raw transaction dump.
+        const digest = buildSpendingDigest(transactions);
+        const userMessage =
+          `Voici le DIGEST des finances de l'utilisateur (agrégats dérivés des transactions ; ` +
+          `"months" = totaux mensuels par catégorie, "topMerchants" = principaux marchands, ` +
+          `"recurring" = paiements récurrents détectés algorithmiquement). ` +
+          `Appuie tes recommandations sur ces chiffres, en priorité sur les paiements récurrents et les catégories en hausse.\n` +
+          JSON.stringify(digest);
+
         const request = {
           model: model,
           messages: [
             { role: 'system' as const, content: systemPrompt },
-            { role: 'user' as const, content: JSON.stringify(transactions) }
+            { role: 'user' as const, content: userMessage }
           ],
           response_format: { type: 'json_object' as const }
         };

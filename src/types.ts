@@ -53,6 +53,7 @@ export interface Challenge {
   status: 'available' | 'in_progress' | 'completed';
   category: string; // legacy display name
   categoryId?: string; // taxonomy slug
+  completedAt?: string; // ISO; anchors the data-verified saving check
   level: number;
   progress?: number;
   isAiGenerated?: boolean;

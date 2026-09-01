@@ -102,6 +102,12 @@ Gamification only. Completing a challenge **never** changes any balance; it reco
 progress/status. "Total saved" is a derived stat (sum of completed challenges'
 `potentialSaving`), shown for motivation, not added to money.
 
+New optional fields: `categoryId` (taxonomy slug, set by the analyze/scan
+endpoints) and `completedAt` (ISO, stamped on completion). Together they let
+`verifyChallengeSaving` (lib/finance) compare the category's real monthly spend
+before vs after completion — completed challenges display a data-verified
+saving once a full month of post-completion data exists.
+
 ## Derived values (single source of truth: transactions)
 
 Computed by `src/lib/finance.ts` — never stored, so pages cannot disagree:

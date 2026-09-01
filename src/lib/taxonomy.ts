@@ -75,6 +75,33 @@ export function isValidSlug(id: string): id is CategorySlug {
   return BY_ID.has(id as CategorySlug);
 }
 
+/** User-created category slug (pro feature). Doc id in `categories/{slug}`. */
+export const CUSTOM_SLUG_PATTERN = /^custom_[a-z0-9_]{1,23}$/;
+
+export function isCustomSlug(id: string): boolean {
+  return CUSTOM_SLUG_PATTERN.test(id);
+}
+
+/** Any slug the data model accepts on a transaction. */
+export function isKnownSlug(id: string): boolean {
+  return isValidSlug(id) || isCustomSlug(id);
+}
+
+/** Derive a custom slug from a display name ("Mes Chats" → "custom_mes_chats"). */
+export function customSlugFor(name: string): string {
+  const base = name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 23);
+  return `custom_${base || 'categorie'}`;
+}
+
+/** Cap on user-created categories (enforced in UI/store, not rules). */
+export const MAX_CUSTOM_CATEGORIES = 8;
+
 /**
  * Legacy free-string category name → slug (migration + joining old data).
  * Matches loosely so LLM-invented labels ("Abonnement", "Télécom", "Charges
@@ -99,11 +126,12 @@ export function slugFromLegacy(name: string | undefined | null): CategorySlug {
   return 'autre';
 }
 
-/** Roll a slug up for display: identity on pro, free group otherwise. */
-export function rollupSlug(slug: CategorySlug, tier: 'free' | 'pro'): string {
+/** Roll a slug up for display: identity on pro, free group otherwise.
+ * Custom slugs (pro-only data) fold into 'autre' if ever seen on free. */
+export function rollupSlug(slug: string, tier: 'free' | 'pro'): string {
   if (tier === 'pro') return slug;
   if (slug === 'revenus') return 'revenus'; // income is never rolled into spend groups
-  return BY_ID.get(slug)?.group ?? 'autre';
+  return BY_ID.get(slug as CategorySlug)?.group ?? 'autre';
 }
 
 /** Display metadata for a rollup key (slug on pro, group on free). */
