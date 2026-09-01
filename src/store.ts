@@ -25,9 +25,10 @@ import {
   getDocs
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
-import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement } from './types';
+import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement, MerchantRule } from './types';
 import { analyzeSpending } from './services/geminiService';
-import { toISODate, guessCategory } from './lib/finance';
+import { toISODate, categorizeImport, effectiveSlug } from './lib/finance';
+import { CategorySlug, categoryById, normalizeLabel, merchantRuleId } from './lib/taxonomy';
 
 export type SpendlyStore = {
   balance: number; // derived: sum of account balances (== totalAssets)
@@ -51,6 +52,9 @@ export type SpendlyStore = {
   seedMockData: () => Promise<void>;
   scanReceipt: (base64Image: string) => Promise<any>;
   executeAiAnalysis: () => Promise<void>;
+  // Pro only (enforced by Firestore rules): reassign a transaction's category
+  // and optionally learn a merchant rule from it.
+  recategorizeTransaction: (txId: string, categoryId: CategorySlug, learnRule?: boolean) => Promise<void>;
 };
 
 const DEFAULT_CATEGORIES: Omit<CategoryBudget, 'id'>[] = [
@@ -97,6 +101,7 @@ export function useSpendlyStore(): SpendlyStore {
   const [categories, setCategories] = useState<CategoryBudget[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [merchantRules, setMerchantRules] = useState<MerchantRule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
@@ -171,12 +176,18 @@ export function useSpendlyStore(): SpendlyStore {
       setChallenges(snap.docs.map(d => ({ id: d.id, ...d.data() } as Challenge)));
     });
 
+    // Merchant rules exist only for pro users; free users just get an empty set.
+    const unsubMerchantRules = onSnapshot(collection(db, 'users', userId, 'merchantRules'), (snap) => {
+      setMerchantRules(snap.docs.map(d => ({ id: d.id, ...d.data() } as MerchantRule)));
+    }, () => setMerchantRules([]));
+
     return () => {
       unsubProfile();
       unsubTransactions();
       unsubCategories();
       unsubAccounts();
       unsubChallenges();
+      unsubMerchantRules();
     };
   }, [fbUser]);
 
@@ -393,19 +404,22 @@ export function useSpendlyStore(): SpendlyStore {
       }
 
       // Firestore batches cap at 500 writes; keep well under with the account included.
+      // Categorization pipeline (docs/CATEGORY_ENGINE.md): merchant rule →
+      // LLM-provided slug → keyword rules → default.
+      const rules = new Map(merchantRules.map(r => [r.normalizedLabel, r.categoryId]));
       for (const t of parsed.transactions.slice(0, 480)) {
         const txRef = doc(collection(db, 'users', userId, 'transactions'));
         const label = (t.label || 'Transaction').slice(0, 100);
-        // Income keeps 'Revenus'; expenses are auto-categorized from the label so
-        // imported spend lands in real budget categories, not a catch-all.
-        const category = t.category
-          ? t.category.slice(0, 50)
-          : (t.amount >= 0 ? 'Revenus' : guessCategory(label));
+        const { categoryId, categorySource, category } = categorizeImport(
+          label, t.amount, t.category, rules, normalizeLabel(label)
+        );
         batch.set(txRef, {
           name: label,
           amount: clampAmount(t.amount),
           category,
-          iconName: t.amount >= 0 ? 'zap' : 'shopping-cart',
+          categoryId,
+          categorySource,
+          iconName: categoryById(categoryId)?.iconName ?? (t.amount >= 0 ? 'zap' : 'shopping-cart'),
           date: toISODate(t.date),
           status: 'completed',
           accountId,
@@ -555,6 +569,37 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
+  // Pro only — Firestore rules reject categorySource 'user' and merchantRules
+  // writes for free users. Reassigns the category and (by default) learns a
+  // merchant rule so future imports of the same label are classified the same.
+  const recategorizeTransaction = async (txId: string, categoryId: CategorySlug, learnRule = true) => {
+    if (!fbUser || user?.tier !== 'pro') return;
+    const userId = fbUser.uid;
+    const meta = categoryById(categoryId);
+    if (!meta) return;
+    try {
+      await updateDoc(doc(db, 'users', userId, 'transactions', txId), {
+        category: meta.name,
+        categoryId,
+        categorySource: 'user',
+        iconName: meta.iconName,
+      });
+      if (learnRule) {
+        const t = transactions.find(x => x.id === txId);
+        const normalized = normalizeLabel(t?.rawLabel || t?.name || '');
+        if (normalized) {
+          await setDoc(doc(db, 'users', userId, 'merchantRules', merchantRuleId(normalized)), {
+            normalizedLabel: normalized,
+            categoryId,
+            createdAt: new Date().toISOString(),
+          });
+        }
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions/${txId}`);
+    }
+  };
+
   const totalAssets = useMemo(() => accounts.reduce((acc, curr) => acc + curr.balance, 0), [accounts]);
   // The wallet/main balance IS the sum of account balances — one source, so pages agree.
   const balance = totalAssets;
@@ -580,7 +625,8 @@ export function useSpendlyStore(): SpendlyStore {
     loginWithMagicLink,
     seedMockData,
     scanReceipt,
-    executeAiAnalysis
+    executeAiAnalysis,
+    recategorizeTransaction
   };
 }
 

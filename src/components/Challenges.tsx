@@ -2,9 +2,16 @@ import React, { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import { Trophy, ShoppingCart, Tv, Zap, Car, Utensils, Wifi, HeartPulse, Plane, Home, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
 import { SpendlyStore } from '../store';
+import { categoryById } from '../lib/taxonomy';
+import type { Challenge } from '../types';
 
 interface ChallengesProps {
   store: SpendlyStore;
+}
+
+/** Display label for a challenge's category: taxonomy name when categoryId is set. */
+function challengeCategoryLabel(c: Challenge): string {
+  return (c.categoryId && categoryById(c.categoryId)?.name) || c.category;
 }
 
 // Icon for a challenge category — matched loosely on the (LLM-provided) name,
@@ -34,7 +41,7 @@ export default function Challenges({ store }: ChallengesProps) {
   // Filter pills derive from the categories actually present in the user's
   // challenges (the LLM writes free-form names for now), not a hardcoded list.
   const filters = useMemo(() => {
-    const cats = [...new Set(challenges.map(c => c.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+    const cats = [...new Set(challenges.map(challengeCategoryLabel).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
     const base = ['Tous'];
     if (challenges.some(c => c.isAiGenerated)) base.push('IA');
     return [...base, ...cats];
@@ -43,7 +50,7 @@ export default function Challenges({ store }: ChallengesProps) {
   const filteredChallenges = challenges.filter(c => {
     if (filter === 'Tous') return true;
     if (filter === 'IA') return c.isAiGenerated;
-    return c.category === filter;
+    return challengeCategoryLabel(c) === filter;
   });
 
   return (
@@ -120,7 +127,7 @@ export default function Challenges({ store }: ChallengesProps) {
                 <div className="flex items-center gap-4">
                   <div className="relative">
                     <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${challenge.status === 'completed' ? 'bg-tertiary/10 text-tertiary' : 'bg-primary/5 text-primary'}`}>
-                      {categoryIcon(challenge.category)}
+                      {categoryIcon(challengeCategoryLabel(challenge))}
                     </div>
                     <div className={`absolute -bottom-1 -right-1 text-[9px] px-1.5 py-0.5 rounded-full border-2 border-white font-bold
                       ${challenge.status === 'completed' ? 'bg-tertiary text-white' : 'bg-surface-container text-secondary'}`}>

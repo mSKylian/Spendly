@@ -19,11 +19,20 @@ export interface Transaction {
   name: string;
   date: string;
   amount: number; // < 0 debit (expense), > 0 credit (income)
-  category: string;
+  category: string; // legacy display name; categoryId is authoritative when present
+  categoryId?: string; // taxonomy slug (src/lib/taxonomy.ts)
+  categorySource?: 'user' | 'rule' | 'llm' | 'default'; // provenance; 'user' is pro-only
   iconName: string;
   accountId?: string; // owning account; required for all new writes
   status?: 'completed' | 'pending' | 'failed';
   rawLabel?: string; // original statement description, for traceability
+}
+
+export interface MerchantRule {
+  id: string; // deterministic hash of normalizedLabel
+  normalizedLabel: string;
+  categoryId: string; // taxonomy slug
+  createdAt: string;
 }
 
 export interface CategoryBudget {
@@ -42,7 +51,8 @@ export interface Challenge {
   description: string;
   potentialSaving: number;
   status: 'available' | 'in_progress' | 'completed';
-  category: string;
+  category: string; // legacy display name
+  categoryId?: string; // taxonomy slug
   level: number;
   progress?: number;
   isAiGenerated?: boolean;

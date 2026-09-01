@@ -57,11 +57,34 @@ All user data lives under `users/{uid}`. Access is owner-only (see `firestore.ru
 | `name` | string (≤100) | ✅ | Human label (merchant / counterparty). |
 | `date` | string (≤50) | ✅ | ISO 8601. |
 | `amount` | number (−1e5…1e5) | ✅ | `< 0` debit, `> 0` credit. |
-| `category` | string (≤50) | ✅ | |
+| `category` | string (≤50) | ✅ | Legacy display name; `categoryId` is authoritative when present. |
+| `categoryId` | slug (≤30) | ⚪️ | Taxonomy slug (`src/lib/taxonomy.ts`, `^[a-z0-9_]{2,30}$`). All new writes set it. |
+| `categorySource` | `'user' \| 'rule' \| 'llm' \| 'default'` | ⚪️ | Categorization provenance. `'user'` requires `tier == 'pro'` (rules-enforced). |
 | `iconName` | string (≤50) | ✅ | |
 | `accountId` | string (≤128) | ✅* | The owning account. *Required for all new writes; older docs may lack it. |
 | `status` | `'completed' \| 'pending' \| 'failed'` | ⚪️ | |
 | `rawLabel` | string (≤200) | ⚪️ | Original statement description, kept for traceability. |
+
+### `users/{uid}/merchantRules/{ruleId}` — MerchantRule (pro only)
+
+Learned categorization rules ("always classify this merchant as X"), written when a
+pro user recategorizes a transaction; applied at import time before keyword/LLM
+classification. Free users cannot create or modify them (rules-enforced).
+
+| Field | Type | Req | Notes |
+|---|---|---|---|
+| `normalizedLabel` | string (1–80) | ✅ | `normalizeLabel()` output; `ruleId` is its FNV-1a hash. |
+| `categoryId` | slug (≤30) | ✅ | Taxonomy slug. |
+| `createdAt` | string (≤50) | ✅ | ISO 8601. |
+
+### Category taxonomy & tiers
+
+Transactions are always classified against the full taxonomy
+(`src/lib/taxonomy.ts`); the tier only changes the display rollup — free sees 4
+groups (Courses, Transport, Abonnements, Loisirs) + Autre, pro sees every
+category. `revenus` never enters spend; it feeds only the income-vs-spend chart.
+Categorization pipeline and rationale: `docs/CATEGORY_ENGINE.md`. Migration for
+pre-taxonomy docs: `scripts/migrate-categories.ts`.
 
 ### `users/{uid}/categories/{categoryId}` — CategoryBudget
 

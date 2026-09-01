@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Info, Lightbulb } from 'lucide-react';
+import { Info, Lightbulb, Lock } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import {
   Period,
@@ -13,9 +13,12 @@ import {
   transactionsForCategory,
   parseTxDate,
   formatTxDate,
+  effectiveSlug,
   INCOME_COLOR,
   SPEND_COLOR,
 } from '../lib/finance';
+import { rollupSlug, displayMeta, SYSTEM_CATEGORIES, CategorySlug } from '../lib/taxonomy';
+import type { Transaction } from '../types';
 
 interface StatsProps {
   store: SpendlyStore;
@@ -32,7 +35,10 @@ const PERIOD_MAP: Record<PeriodLabel, Period> = {
 const MONTHS_SHOWN = 6;
 
 export default function Stats({ store }: StatsProps) {
-  const { transactions, categories, user } = store;
+  const { transactions, categories, user, recategorizeTransaction } = store;
+  const tier = user?.tier ?? 'free';
+  // Slug-keyed grouping, rolled up to 4 groups + Autre on free tier.
+  const keyOf = useMemo(() => (t: Transaction) => rollupSlug(effectiveSlug(t), tier), [tier]);
   const [periodLabel, setPeriodLabel] = useState<PeriodLabel>('Mois');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedMonth, setSelectedMonth] = useState<Date | null>(null);
@@ -52,14 +58,13 @@ export default function Stats({ store }: StatsProps) {
   }, [transactions]);
 
   const series = useMemo(
-    () => monthlySeries(transactions, MONTHS_SHOWN, chartAnchor),
-    [transactions, chartAnchor]
+    () => monthlySeries(transactions, MONTHS_SHOWN, chartAnchor, keyOf),
+    [transactions, chartAnchor, keyOf]
   );
 
   // Fixed categorical color assignment: order by total spend across the whole
   // window so a category keeps its color regardless of the selected month.
   const catMeta = useMemo(() => {
-    const meta = new Map(categories.map((c) => [c.name.toLowerCase(), c]));
     const totals = new Map<string, number>();
     for (const p of series) {
       for (const [key, v] of Object.entries(p.byCategory)) {
@@ -69,14 +74,10 @@ export default function Stats({ store }: StatsProps) {
     return [...totals.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([key]) => {
-        const c = meta.get(key);
-        return {
-          key,
-          name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
-          color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
-        };
+        const meta = displayMeta(key, tier);
+        return { key, name: meta.name, color: hexFromColorClass(meta.colorClass) };
       });
-  }, [categories, series]);
+  }, [series, tier]);
 
   // Reference date for the breakdown: the tapped month (month period only),
   // defaulting to the month-with-data fallback used by the dashboard.
@@ -90,21 +91,14 @@ export default function Stats({ store }: StatsProps) {
   const data = useMemo(() => {
     const spent = totalSpent(transactions, period, refDate);
     const limit = user?.limits?.[period] ?? 0;
-    const byCat = spentByCategory(transactions, period, refDate);
+    const byCat = spentByCategory(transactions, period, refDate, keyOf);
 
-    // Build the breakdown from every category that actually has spend (keys of
-    // byCat), not just the seeded budget categories — so it always sums to the
-    // total. Category metadata (colour, proper-case name) is used when available.
-    const meta = new Map(categories.map((c) => [c.name.toLowerCase(), c]));
+    // Breakdown from every rollup key that actually has spend, so it always
+    // sums to the total; display metadata comes from the taxonomy.
     const cats = Object.entries(byCat)
       .map(([key, amount]) => {
-        const c = meta.get(key);
-        return {
-          key,
-          name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
-          amount,
-          color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
-        };
+        const meta = displayMeta(key, tier);
+        return { key, name: meta.name, amount, color: hexFromColorClass(meta.colorClass) };
       })
       .filter((c) => c.amount > 0)
       .sort((a, b) => b.amount - a.amount)
@@ -119,11 +113,11 @@ export default function Stats({ store }: StatsProps) {
       spent,
       categories: cats,
     };
-  }, [transactions, categories, user, period, refDate]);
+  }, [transactions, user, period, refDate, keyOf, tier]);
 
   const drillDownTxs = useMemo(
-    () => (selectedCategory ? transactionsForCategory(transactions, selectedCategory, period, refDate) : []),
-    [selectedCategory, transactions, period, refDate]
+    () => (selectedCategory ? transactionsForCategory(transactions, selectedCategory, period, refDate, keyOf) : []),
+    [selectedCategory, transactions, period, refDate, keyOf]
   );
 
   const flowMax = Math.max(...series.map((p) => Math.max(p.income, p.spend)), 1);
@@ -359,14 +353,35 @@ export default function Stats({ store }: StatsProps) {
                     >
                       <div className="px-3 pb-3 pt-1 space-y-0.5">
                         {drillDownTxs.map((t) => (
-                          <div key={t.id} className="flex items-center justify-between py-2 pl-7 border-t border-surface-container first:border-t-0">
-                            <div>
-                              <p className="font-bold text-xs">{t.name}</p>
+                          <div key={t.id} className="flex items-center justify-between gap-2 py-2 pl-7 border-t border-surface-container first:border-t-0">
+                            <div className="min-w-0">
+                              <p className="font-bold text-xs truncate">{t.name}</p>
                               <p className="text-[9px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
                             </div>
-                            <span className="font-display font-extrabold text-xs text-red-600 tabular-nums">
-                              {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
-                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {tier === 'pro' ? (
+                                // Recategorize + learn a merchant rule (pro only,
+                                // enforced server-side by Firestore rules).
+                                <select
+                                  value={effectiveSlug(t)}
+                                  onChange={(e) => recategorizeTransaction(t.id, e.target.value as CategorySlug)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-[9px] font-bold uppercase bg-surface-container rounded-lg px-1.5 py-1 outline-none max-w-[110px]"
+                                  title="Recatégoriser"
+                                >
+                                  {SYSTEM_CATEGORIES.filter((c) => !c.isIncome).map((c) => (
+                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="flex items-center gap-1 text-[8px] font-bold uppercase text-secondary/60" title="Recatégorisation réservée aux membres Pro">
+                                  <Lock size={9} /> Pro
+                                </span>
+                              )}
+                              <span className="font-display font-extrabold text-xs text-red-600 tabular-nums">
+                                {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                              </span>
+                            </div>
                           </div>
                         ))}
                       </div>

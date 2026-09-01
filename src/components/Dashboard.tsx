@@ -1,9 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
+import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera, Home, HeartPulse, Plane, Wallet } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
-import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference, monthlySeries, transactionsForCategory, hexFromColorClass } from '../lib/finance';
+import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference, monthlySeries, transactionsForCategory, hexFromColorClass, effectiveSlug } from '../lib/finance';
+import { rollupSlug, displayMeta, slugFromLegacy } from '../lib/taxonomy';
+import type { Transaction } from '../types';
 
 interface DashboardProps {
   store: SpendlyStore;
@@ -46,6 +48,10 @@ export default function Dashboard({ store }: DashboardProps) {
       case 'cloud': return <Cloud size={20} className="text-secondary" />;
       case 'package': return <Package size={20} className="text-secondary" />;
       case 'tv': return <Tv size={20} className="text-secondary" />;
+      case 'home': return <Home size={20} className="text-secondary" />;
+      case 'heart': return <HeartPulse size={20} className="text-secondary" />;
+      case 'plane': return <Plane size={20} className="text-secondary" />;
+      case 'wallet': return <Wallet size={20} className="text-secondary" />;
       default: return <ShoppingCart size={20} className="text-secondary opacity-60" />;
     }
   };
@@ -54,42 +60,45 @@ export default function Dashboard({ store }: DashboardProps) {
   // month; if it has no transactions (e.g. right after importing a historical
   // statement), falls back to the latest month with data, labeled below.
   const monthRef = useMemo(() => monthReference(transactions), [transactions]);
-  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month', monthRef), [transactions, monthRef]);
+  // Categories are keyed by taxonomy slug, rolled up to 4 groups + Autre on
+  // the free tier; pro sees the full taxonomy (docs/CATEGORY_ENGINE.md).
+  const tier = user?.tier ?? 'free';
+  const keyOf = useMemo(() => (t: Transaction) => rollupSlug(effectiveSlug(t), tier), [tier]);
+  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month', monthRef, keyOf), [transactions, monthRef, keyOf]);
   const monthSpent = useMemo(() => totalSpent(transactions, 'month', monthRef), [transactions, monthRef]);
   const usedPercent = computeUsedPercent(monthSpent, user?.limits?.month ?? 0);
   const now = new Date();
   const isCurrentMonth = monthRef.getMonth() === now.getMonth() && monthRef.getFullYear() === now.getFullYear();
   const monthLabel = monthRef.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
 
-  // Top categories by actual spend this month — every category present in the
-  // data, not just the seeded budget docs. Budget/color/icon meta joins in when
-  // a matching category doc exists.
-  const series = useMemo(() => monthlySeries(transactions, 6, monthRef), [transactions, monthRef]);
+  // Top categories by actual spend this month. Display metadata comes from the
+  // taxonomy; budgets join from the user's category docs via their legacy name.
+  const series = useMemo(() => monthlySeries(transactions, 6, monthRef, keyOf), [transactions, monthRef, keyOf]);
   const topCategories = useMemo(() => {
-    const meta = new Map(categories.map(c => [c.name.toLowerCase(), c]));
+    const budgetBySlug = new Map(categories.map(c => [slugFromLegacy(c.name), c.limit]));
     return Object.entries(monthByCategory)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([key, spent]) => {
-        const c = meta.get(key);
+        const meta = displayMeta(key, tier);
         return {
           key,
-          name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
+          name: meta.name,
           spent,
-          limit: c?.limit ?? 0,
-          colorClass: c?.colorClass ?? 'bg-slate-500',
-          color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
-          iconName: c?.iconName ?? 'shopping',
+          limit: budgetBySlug.get(key as any) ?? 0,
+          colorClass: meta.colorClass,
+          color: hexFromColorClass(meta.colorClass),
+          iconName: meta.iconName,
           history: series.map(p => p.byCategory[key] || 0),
         };
       });
-  }, [monthByCategory, categories, series]);
+  }, [monthByCategory, categories, series, tier]);
 
   const [drillDown, setDrillDown] = useState<string | null>(null);
   const drillDownCat = topCategories.find(c => c.key === drillDown);
   const drillDownTxs = useMemo(
-    () => (drillDown ? transactionsForCategory(transactions, drillDown, 'month', monthRef) : []),
-    [drillDown, transactions, monthRef]
+    () => (drillDown ? transactionsForCategory(transactions, drillDown, 'month', monthRef, keyOf) : []),
+    [drillDown, transactions, monthRef, keyOf]
   );
 
   return (

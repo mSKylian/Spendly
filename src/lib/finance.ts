@@ -1,7 +1,21 @@
 import { Transaction } from '../types';
+import { CategorySlug, CategorySource, isValidSlug, slugFromLegacy, categoryById } from './taxonomy';
 
 // A single source of truth for money math so every page derives the same
 // numbers from the same data (transactions), instead of divergent stored fields.
+
+/**
+ * Authoritative category slug of a transaction: `categoryId` when present and
+ * valid, otherwise mapped from the legacy free-string `category`.
+ */
+export function effectiveSlug(t: Pick<Transaction, 'category' | 'categoryId'>): CategorySlug {
+  return t.categoryId && isValidSlug(t.categoryId) ? t.categoryId : slugFromLegacy(t.category);
+}
+
+/** Default grouping key for selectors: the effective taxonomy slug. */
+export function slugKey(t: Transaction): string {
+  return effectiveSlug(t);
+}
 
 export type Period = 'week' | 'month' | 'year';
 
@@ -78,17 +92,22 @@ export function totalSpent(
   );
 }
 
-/** Spend per category (keyed by lower-cased category name) within the period. */
+/**
+ * Spend per category within the period, keyed by `keyOf` (default: the
+ * transaction's effective taxonomy slug — pass a tier-rollup key to group for
+ * the free tier).
+ */
 export function spentByCategory(
   transactions: Transaction[],
   period: Period,
-  now: Date = new Date()
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
 ): Record<string, number> {
   const out: Record<string, number> = {};
   for (const t of transactionsInPeriod(transactions, period, now)) {
     const spent = expenseAmount(t);
     if (spent === 0) continue;
-    const key = t.category.toLowerCase();
+    const key = keyOf(t);
     out[key] = (out[key] || 0) + spent;
   }
   return out;
@@ -142,7 +161,8 @@ function monthKey(d: Date): string {
 export function monthlySeries(
   transactions: Transaction[],
   months: number,
-  now: Date = new Date()
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
 ): MonthPoint[] {
   const points: MonthPoint[] = [];
   const byKey = new Map<string, MonthPoint>();
@@ -170,22 +190,23 @@ export function monthlySeries(
     } else {
       const spent = expenseAmount(t);
       point.spend += spent;
-      const key = t.category.toLowerCase();
+      const key = keyOf(t);
       point.byCategory[key] = (point.byCategory[key] || 0) + spent;
     }
   }
   return points;
 }
 
-/** Expense transactions of one category (lower-cased key) within the period. */
+/** Expense transactions of one category key within the period. */
 export function transactionsForCategory(
   transactions: Transaction[],
   categoryKey: string,
   period: Period,
-  now: Date = new Date()
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
 ): Transaction[] {
   return transactionsInPeriod(transactions, period, now)
-    .filter((t) => t.amount < 0 && t.category.toLowerCase() === categoryKey)
+    .filter((t) => t.amount < 0 && keyOf(t) === categoryKey)
     .sort((a, b) => b.date.localeCompare(a.date));
 }
 
@@ -242,4 +263,71 @@ export function guessCategory(label: string): string {
     if (words.some((w) => l.includes(w))) return category;
   }
   return 'Autre';
+}
+
+// Keyword → taxonomy slug rules (pipeline step 3). More specific slugs than
+// the legacy CATEGORY_KEYWORDS table; first match wins, order matters.
+const SLUG_KEYWORDS: Array<{ slug: CategorySlug; words: string[] }> = [
+  { slug: 'logement', words: ['loyer', 'immobilier', 'syndic', 'foncia', 'nexity'] },
+  { slug: 'energie_telecom', words: ['edf', 'engie', 'totalenergies elec', 'free mobile', 'free telecom', 'orange', 'sfr', 'bouygues tel', 'sosh', 'red by'] },
+  { slug: 'abonnements', words: ['netflix', 'spotify', 'deezer', 'disney', 'canal', 'apple.com', 'icloud', 'prime', 'amazon music', 'youtube', 'assurance', 'basic fit', 'abonnement'] },
+  { slug: 'courses', words: ['carrefour', 'lidl', 'cora', 'auchan', 'monoprix', 'franprix', 'leclerc', 'intermarche', 'casino', 'boulangerie', 'boucherie', 'primeur', 'picard', 'grand frais'] },
+  { slug: 'restaurants', words: ['restaurant', 'bistrot', 'mcdo', 'mcdonald', 'burger', 'uber eats', 'deliveroo', 'brasserie', 'pizzeria', 'sushi', 'kebab', 'cafe', 'café'] },
+  { slug: 'transport', words: ['sncf', 'ratp', 'uber', 'bolt', 'total', 'essence', 'station', 'parking', 'velib', 'blablacar', 'navigo', 'peage', 'shell', 'esso', 'autoroute'] },
+  { slug: 'sante', words: ['pharmacie', 'docteur', 'medecin', 'médecin', 'mutuelle', 'dentiste', 'laboratoire', 'hopital', 'hôpital'] },
+  { slug: 'voyages', words: ['airbnb', 'booking', 'hotel', 'hôtel', 'air france', 'ryanair', 'easyjet', 'transavia'] },
+  { slug: 'shopping', words: ['zalando', 'vinted', 'zara', 'h&m', 'uniqlo', 'kiabi', 'primark'] },
+  { slug: 'loisirs', words: ['amazon', 'fnac', 'decathlon', 'cinema', 'cinéma', 'steam', 'playstation', 'nintendo', 'cultura', 'sport', 'concert'] },
+  { slug: 'epargne_virements', words: ['epargne', 'épargne', 'livret', 'vir interne', 'virement interne'] },
+];
+
+/** Keyword-classify a label into a taxonomy slug; 'autre' when unknown. */
+export function guessSlug(label: string): CategorySlug {
+  const l = (label || '').toLowerCase();
+  for (const { slug, words } of SLUG_KEYWORDS) {
+    if (words.some((w) => l.includes(w))) return slug;
+  }
+  return 'autre';
+}
+
+/**
+ * Categorize an imported transaction (docs/CATEGORY_ENGINE.md pipeline):
+ * merchant rule → LLM-provided slug → keyword rules → default. Returns the
+ * slug, its provenance, and the matching legacy display name.
+ */
+export function categorizeImport(
+  label: string,
+  amount: number,
+  llmCategory: string | undefined,
+  merchantRules: Map<string, string>,
+  normalizedLabel: string
+): { categoryId: CategorySlug; categorySource: CategorySource; category: string } {
+  let categoryId: CategorySlug | null = null;
+  let categorySource: CategorySource = 'default';
+
+  const ruled = merchantRules.get(normalizedLabel);
+  if (ruled && isValidSlug(ruled)) {
+    categoryId = ruled;
+    categorySource = 'rule';
+  } else if (amount >= 0) {
+    categoryId = 'revenus';
+  } else if (llmCategory && isValidSlug(llmCategory.toLowerCase())) {
+    categoryId = llmCategory.toLowerCase() as CategorySlug;
+    categorySource = 'llm';
+  } else {
+    const guessed = llmCategory ? slugFromLegacy(llmCategory) : guessSlug(label);
+    if (guessed !== 'autre') {
+      categoryId = guessed;
+      categorySource = llmCategory ? 'llm' : 'rule';
+    } else {
+      categoryId = guessSlug(label);
+      categorySource = categoryId === 'autre' ? 'default' : 'rule';
+    }
+  }
+
+  return {
+    categoryId,
+    categorySource,
+    category: categoryById(categoryId)?.name ?? 'Autre',
+  };
 }

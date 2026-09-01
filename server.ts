@@ -9,6 +9,24 @@ import { getAuth } from "firebase-admin/auth";
 import OpenAI from "openai";
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import { CATEGORY_SLUGS, isValidSlug, slugFromLegacy, categoryById } from './src/lib/taxonomy';
+
+// Closed category enum for every LLM prompt: the model classifies against the
+// taxonomy, it never invents category names (docs/CATEGORY_ENGINE.md).
+const CATEGORY_ENUM = CATEGORY_SLUGS.join(' | ');
+const CATEGORY_PROMPT_RULES = `
+Règles de catégorisation :
+- "category" doit être EXACTEMENT l'un de : ${CATEGORY_ENUM}.
+- Exemples : "CARREFOUR MARKET CB" -> courses ; "PRLV SEPA FREE MOBILE" -> energie_telecom ;
+  "NETFLIX.COM" -> abonnements ; "VIR SEPA LOYER" -> logement ; "SNCF CONNECT" -> transport ;
+  "PHARMACIE" -> sante ; "VIREMENT SALAIRE" -> revenus ; "RETRAIT DAB" -> autre.
+- En cas de doute, utilise "autre" (dépense) ou "revenus" (crédit).`;
+
+// Map whatever the model returned onto the taxonomy; never trust it blindly.
+function toSlug(category: unknown): string {
+  const c = String(category || '').toLowerCase().trim();
+  return isValidSlug(c) ? c : slugFromLegacy(c);
+}
 
 
 // Initialize Firebase Admin from environment variables (see .env.example)
@@ -301,8 +319,9 @@ async function startServer() {
               "total": number,
               "items": [{ "name": "string", "price": number }],
               "analysis": "string (un résumé court des économies possibles)",
-              "suggestedChallenges": [{ "title": "string", "description": "string", "potentialSaving": number, "category": "string" }]
-            }`
+              "suggestedChallenges": [{ "title": "string", "description": "string", "potentialSaving": number, "category": "string (slug)" }]
+            }
+            ${CATEGORY_PROMPT_RULES}`
           },
           {
             role: 'user',
@@ -324,8 +343,11 @@ async function startServer() {
         
         for (const ch of result.suggestedChallenges) {
            const newDoc = challengesCol.doc();
+           const categoryId = toSlug(ch?.category);
            batch.set(newDoc, {
              ...ch,
+             categoryId,
+             category: categoryById(categoryId)?.name ?? String(ch?.category ?? 'Autre'),
              status: 'available',
              level: 1,
              isAiGenerated: true,
@@ -400,7 +422,7 @@ async function startServer() {
                 "closingBalance": number
               },
               "transactions": [
-                { "date": "string (ISO 8601, YYYY-MM-DD)", "label": "string", "amount": number (signé: négatif = débit, positif = crédit), "category": "string (optionnel)" }
+                { "date": "string (ISO 8601, YYYY-MM-DD)", "label": "string", "amount": number (signé: négatif = débit, positif = crédit), "category": "string (slug de catégorie)" }
               ]
             }
 
@@ -408,7 +430,8 @@ async function startServer() {
             - Les montants sont signés : débit/dépense = négatif, crédit/revenu = positif.
             - Les dates doivent être au format ISO 8601 (YYYY-MM-DD).
             - Si le solde de clôture n'est pas visible, calcule-le comme la somme des montants des transactions.
-            - Ne renvoie aucun texte en dehors du JSON.`
+            - Ne renvoie aucun texte en dehors du JSON.
+            ${CATEGORY_PROMPT_RULES}`
           },
           {
             role: 'user',
@@ -444,7 +467,8 @@ async function startServer() {
             date: t.date,
             label: typeof t.label === 'string' && t.label ? t.label : 'Transaction',
             amount: t.amount,
-            category: typeof t.category === 'string' ? t.category : undefined,
+            // Always a taxonomy slug: off-enum model output is re-mapped.
+            category: typeof t.category === 'string' ? toSlug(t.category) : undefined,
           })),
       };
 
@@ -620,7 +644,9 @@ async function startServer() {
         });
       }
 
-      const systemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
+      const baseSystemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
+      // The category enum applies even to admin-customized prompts.
+      const systemPrompt = baseSystemPrompt + '\n' + CATEGORY_PROMPT_RULES;
       // The env fallback key is a Gemini key: route to Google regardless of any
       // provider configured without a key, and ignore a custom URL configured
       // for a different provider — the key would be sent to the wrong host.
@@ -674,7 +700,14 @@ async function startServer() {
              .replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
            const parsed = JSON.parse(raw);
            insight = parsed.insight || "Nouvelle analyse";
-           newChallenges = parsed.newChallenges || parsed.recommendations || [];
+           newChallenges = (parsed.newChallenges || parsed.recommendations || []).map((ch: any) => {
+             const categoryId = toSlug(ch?.category);
+             return {
+               ...ch,
+               categoryId,
+               category: categoryById(categoryId)?.name ?? String(ch?.category ?? 'Autre'),
+             };
+           });
         } catch(e) {
            console.error("Failed to parse LLM response", e);
         }
