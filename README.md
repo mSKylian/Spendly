@@ -39,6 +39,12 @@ Les clés API cloud sont chiffrées en **AES-256** côté serveur. Les modèles 
 
 ## 🚀 Lancer le projet en local
 
+> **Vous faisiez déjà tourner Spendly ?** La configuration et le modèle de
+> données ont changé (`.env` unique, moteur de catégories, nouvelles règles
+> Firestore). Suivez **[MIGRATION.md](MIGRATION.md)** pour mettre à jour votre
+> instance — le guide est autoportant et peut être confié tel quel à un agent
+> (Google AI Studio, Claude, …).
+
 ```bash
 # Cloner le repo
 git clone https://github.com/mSKylian/Spendly.git
