@@ -9,6 +9,55 @@ import { getAuth } from "firebase-admin/auth";
 import OpenAI from "openai";
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import { CATEGORY_SLUGS, isValidSlug, slugFromLegacy, categoryById } from './src/lib/taxonomy';
+import { buildSpendingDigest } from './src/lib/digest';
+
+// Closed category enum for every LLM prompt: the model classifies against the
+// taxonomy, it never invents category names (docs/CATEGORY_ENGINE.md).
+const CATEGORY_ENUM = CATEGORY_SLUGS.join(' | ');
+const CATEGORY_PROMPT_RULES = `
+Règles de catégorisation :
+- "category" doit être EXACTEMENT l'un de : ${CATEGORY_ENUM}.
+- Exemples : "CARREFOUR MARKET CB" -> courses ; "PRLV SEPA FREE MOBILE" -> energie_telecom ;
+  "NETFLIX.COM" -> abonnements ; "VIR SEPA LOYER" -> logement ; "SNCF CONNECT" -> transport ;
+  "PHARMACIE" -> sante ; "VIREMENT SALAIRE" -> revenus ; "RETRAIT DAB" -> autre.
+- En cas de doute, utilise "autre" (dépense) ou "revenus" (crédit).`;
+
+// Map whatever the model returned onto the taxonomy; never trust it blindly.
+function toSlug(category: unknown): string {
+  const c = String(category || '').toLowerCase().trim();
+  return isValidSlug(c) ? c : slugFromLegacy(c);
+}
+
+// Default analyze prompt, aligned with the category engine: the model receives
+// an aggregated DIGEST (built by src/lib/digest.ts), never raw transactions,
+// and must ground every recommendation in the digest's numbers.
+const DEFAULT_ANALYZE_PROMPT = `Tu es un conseiller financier expert.
+Tu reçois un DIGEST agrégé des finances de l'utilisateur (jamais la liste brute des transactions) :
+- "months" : totaux mensuels (spend, income) et dépenses par catégorie (byCategory, clés = slugs de catégorie) ;
+- "topMerchants" : principaux marchands par dépense totale (label, categoryId, total, count) ;
+- "recurring" : paiements récurrents détectés algorithmiquement (label, categoryId, avgAmount, occurrences).
+
+Renvoie UNIQUEMENT un JSON de la forme :
+{
+  "insight": "string — résumé court et percutant qui cite au moins un chiffre réel du digest",
+  "newChallenges": [
+    {
+      "title": "string (action courte)",
+      "subtitle": "string (marchand ou catégorie visé)",
+      "description": "string (explication concrète appuyée sur les chiffres du digest)",
+      "potentialSaving": number (économie MENSUELLE réaliste, inférieure au montant réel correspondant),
+      "category": "string (slug de catégorie)",
+      "level": number (1 à 3 selon la difficulté)
+    }
+  ]
+}
+
+Règles :
+- 2 à 3 recommandations maximum, chacune ancrée sur un élément précis du digest
+  (un paiement récurrent, une catégorie qui domine ou augmente, un marchand principal).
+- Ne recommande jamais une économie supérieure à la dépense réelle correspondante.
+- Aucun texte en dehors du JSON.`;
 
 
 // Initialize Firebase Admin from environment variables (see .env.example)
@@ -301,8 +350,9 @@ async function startServer() {
               "total": number,
               "items": [{ "name": "string", "price": number }],
               "analysis": "string (un résumé court des économies possibles)",
-              "suggestedChallenges": [{ "title": "string", "description": "string", "potentialSaving": number, "category": "string" }]
-            }`
+              "suggestedChallenges": [{ "title": "string", "description": "string", "potentialSaving": number, "category": "string (slug)" }]
+            }
+            ${CATEGORY_PROMPT_RULES}`
           },
           {
             role: 'user',
@@ -324,8 +374,11 @@ async function startServer() {
         
         for (const ch of result.suggestedChallenges) {
            const newDoc = challengesCol.doc();
+           const categoryId = toSlug(ch?.category);
            batch.set(newDoc, {
              ...ch,
+             categoryId,
+             category: categoryById(categoryId)?.name ?? String(ch?.category ?? 'Autre'),
              status: 'available',
              level: 1,
              isAiGenerated: true,
@@ -400,7 +453,7 @@ async function startServer() {
                 "closingBalance": number
               },
               "transactions": [
-                { "date": "string (ISO 8601, YYYY-MM-DD)", "label": "string", "amount": number (signé: négatif = débit, positif = crédit), "category": "string (optionnel)" }
+                { "date": "string (ISO 8601, YYYY-MM-DD)", "label": "string", "amount": number (signé: négatif = débit, positif = crédit), "category": "string (slug de catégorie)" }
               ]
             }
 
@@ -408,7 +461,8 @@ async function startServer() {
             - Les montants sont signés : débit/dépense = négatif, crédit/revenu = positif.
             - Les dates doivent être au format ISO 8601 (YYYY-MM-DD).
             - Si le solde de clôture n'est pas visible, calcule-le comme la somme des montants des transactions.
-            - Ne renvoie aucun texte en dehors du JSON.`
+            - Ne renvoie aucun texte en dehors du JSON.
+            ${CATEGORY_PROMPT_RULES}`
           },
           {
             role: 'user',
@@ -444,7 +498,8 @@ async function startServer() {
             date: t.date,
             label: typeof t.label === 'string' && t.label ? t.label : 'Transaction',
             amount: t.amount,
-            category: typeof t.category === 'string' ? t.category : undefined,
+            // Always a taxonomy slug: off-enum model output is re-mapped.
+            category: typeof t.category === 'string' ? toSlug(t.category) : undefined,
           })),
       };
 
@@ -560,7 +615,7 @@ async function startServer() {
 
   app.post("/api/analyze", authenticate, llmLimiter, async (req, res) => {
     const user = (req as any).user;
-    let { transactions } = req.body;
+    let { transactions, force } = req.body;
     // Compute hash server-side from the actual submitted data
     const hashStr = JSON.stringify((transactions || []).map((t: any) => `${t.name}:${t.amount}`));
     let hashVal = 0;
@@ -579,18 +634,20 @@ async function startServer() {
         return res.json({ insight: "L'analyse IA est actuellement désactivée par l'administrateur.", newChallenges: [] });
       }
       
-      const maxTx = config?.maxTransactions || 50;
-      if (transactions.length > maxTx) {
-        transactions = transactions.slice(0, maxTx);
-      }
+      // The LLM receives a compact digest, not the raw list, so the cap only
+      // bounds digest computation — maxTransactions no longer limits it.
+      transactions = (transactions || []).slice(0, 600);
       
-      // 1. Check cache cache
-      const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
-      if (cacheDoc.exists) {
-         const data = cacheDoc.data()!;
-         if (data.hash === transactionsHash && data.promptVersion === (config?.updatedAt || 'v1')) {
-            return res.json({ insight: data.insight, newChallenges: data.newChallenges });
-         }
+      // 1. Check cache cache (skipped on an explicit forced re-analysis, e.g. a
+      // user clicking "analyser" — they expect a fresh run even if nothing changed)
+      if (!force) {
+        const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
+        if (cacheDoc.exists) {
+           const data = cacheDoc.data()!;
+           if (data.hash === transactionsHash && data.promptVersion === (config?.updatedAt || 'v1')) {
+              return res.json({ insight: data.insight, newChallenges: data.newChallenges });
+           }
+        }
       }
 
       const validated = validateBaseUrl(config?.url);
@@ -620,7 +677,9 @@ async function startServer() {
         });
       }
 
-      const systemPrompt = config?.systemPrompt || "Tu es un conseiller financier. Renvoie UNIQUEMENT un JSON contenant: 'insight' (string, un résumé court et percutant) et 'newChallenges' (array d'objets avec title, subtitle, description, potentialSaving(number), category, level(number 1-3)).";
+      const baseSystemPrompt = config?.systemPrompt || DEFAULT_ANALYZE_PROMPT;
+      // The category enum applies even to admin-customized prompts.
+      const systemPrompt = baseSystemPrompt + '\n' + CATEGORY_PROMPT_RULES;
       // The env fallback key is a Gemini key: route to Google regardless of any
       // provider configured without a key, and ignore a custom URL configured
       // for a different provider — the key would be sent to the wrong host.
@@ -645,11 +704,21 @@ async function startServer() {
           baseURL: baseURL
         });
 
+        // Digest-fed analysis: aggregates + deterministic recurring detection
+        // (src/lib/digest.ts) instead of a raw transaction dump.
+        const digest = buildSpendingDigest(transactions);
+        const userMessage =
+          `Voici le DIGEST des finances de l'utilisateur (agrégats dérivés des transactions ; ` +
+          `"months" = totaux mensuels par catégorie, "topMerchants" = principaux marchands, ` +
+          `"recurring" = paiements récurrents détectés algorithmiquement). ` +
+          `Appuie tes recommandations sur ces chiffres, en priorité sur les paiements récurrents et les catégories en hausse.\n` +
+          JSON.stringify(digest);
+
         const request = {
           model: model,
           messages: [
             { role: 'system' as const, content: systemPrompt },
-            { role: 'user' as const, content: JSON.stringify(transactions) }
+            { role: 'user' as const, content: userMessage }
           ],
           response_format: { type: 'json_object' as const }
         };
@@ -669,12 +738,28 @@ async function startServer() {
         }
 
         try {
-           // Models without JSON mode may wrap the payload in ```json fences.
+           // Models without JSON mode may wrap the payload in ```json fences or
+           // append commentary after the object — extract the outermost JSON.
            const raw = (response.choices[0].message.content || '{}')
              .replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
-           const parsed = JSON.parse(raw);
+           let parsed;
+           try {
+             parsed = JSON.parse(raw);
+           } catch {
+             const start = raw.indexOf('{');
+             const end = raw.lastIndexOf('}');
+             if (start === -1 || end <= start) throw new Error('No JSON object in LLM response');
+             parsed = JSON.parse(raw.slice(start, end + 1));
+           }
            insight = parsed.insight || "Nouvelle analyse";
-           newChallenges = parsed.newChallenges || parsed.recommendations || [];
+           newChallenges = (parsed.newChallenges || parsed.recommendations || []).map((ch: any) => {
+             const categoryId = toSlug(ch?.category);
+             return {
+               ...ch,
+               categoryId,
+               category: categoryById(categoryId)?.name ?? String(ch?.category ?? 'Autre'),
+             };
+           });
         } catch(e) {
            console.error("Failed to parse LLM response", e);
         }
