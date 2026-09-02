@@ -1,16 +1,22 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera } from 'lucide-react';
+import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera, Home, HeartPulse, Plane, Wallet, Lock } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
-import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate } from '../lib/finance';
+import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference, monthlySeries, transactionsForCategory, hexFromColorClass, effectiveSlug } from '../lib/finance';
+import { rollupSlug, displayMeta, slugFromLegacy, isCustomSlug, SYSTEM_CATEGORIES } from '../lib/taxonomy';
+import type { Transaction } from '../types';
 
 interface DashboardProps {
   store: SpendlyStore;
 }
 
 export default function Dashboard({ store }: DashboardProps) {
-  const { balance, categories, transactions, user, accounts, addTransaction, scanReceipt } = store;
+  const { balance, categories, transactions, user, accounts, addTransaction, scanReceipt, recategorizeTransaction } = store;
+  const tier = user?.tier ?? 'free';
+  // User-created categories (pro): docs whose id is a custom_* slug, offered
+  // alongside the system taxonomy in the recategorize control.
+  const customCats = useMemo(() => categories.filter(c => c.id && isCustomSlug(c.id)), [categories]);
   const [showAdd, setShowAdd] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [newTrans, setNewTrans] = useState({ name: '', amount: '', category: 'Nourriture', accountId: accounts[0]?.id || '' });
@@ -46,15 +52,82 @@ export default function Dashboard({ store }: DashboardProps) {
       case 'cloud': return <Cloud size={20} className="text-secondary" />;
       case 'package': return <Package size={20} className="text-secondary" />;
       case 'tv': return <Tv size={20} className="text-secondary" />;
+      case 'home': return <Home size={20} className="text-secondary" />;
+      case 'heart': return <HeartPulse size={20} className="text-secondary" />;
+      case 'plane': return <Plane size={20} className="text-secondary" />;
+      case 'wallet': return <Wallet size={20} className="text-secondary" />;
       default: return <ShoppingCart size={20} className="text-secondary opacity-60" />;
     }
   };
 
-  // Derive spend from transactions (single source of truth) for the current month,
-  // so the Dashboard and the Stats page always show the same numbers.
-  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month'), [transactions]);
-  const monthSpent = useMemo(() => totalSpent(transactions, 'month'), [transactions]);
+  // Derive spend from transactions (single source of truth). Shows the current
+  // month; if it has no transactions (e.g. right after importing a historical
+  // statement), falls back to the latest month with data, labeled below.
+  const monthRef = useMemo(() => monthReference(transactions), [transactions]);
+  // Categories are keyed by taxonomy slug, rolled up to 4 groups + Autre on
+  // the free tier; pro sees the full taxonomy (docs/CATEGORY_ENGINE.md).
+  const keyOf = useMemo(() => (t: Transaction) => rollupSlug(effectiveSlug(t), tier), [tier]);
+  const monthByCategory = useMemo(() => spentByCategory(transactions, 'month', monthRef, keyOf), [transactions, monthRef, keyOf]);
+  const monthSpent = useMemo(() => totalSpent(transactions, 'month', monthRef), [transactions, monthRef]);
   const usedPercent = computeUsedPercent(monthSpent, user?.limits?.month ?? 0);
+  const now = new Date();
+  const isCurrentMonth = monthRef.getMonth() === now.getMonth() && monthRef.getFullYear() === now.getFullYear();
+  const monthLabel = monthRef.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+
+  // Top categories by actual spend this month. Display metadata comes from the
+  // taxonomy; budgets join from the user's category docs via their legacy name.
+  const series = useMemo(() => monthlySeries(transactions, 6, monthRef, keyOf), [transactions, monthRef, keyOf]);
+  const topCategories = useMemo(() => {
+    // Budget joins: custom docs by their slug id, system docs via legacy name.
+    const budgetBySlug = new Map(categories.map(c => [c.id && isCustomSlug(c.id) ? c.id : slugFromLegacy(c.name), c.limit]));
+    const customMeta = new Map(categories.filter(c => c.id && isCustomSlug(c.id)).map(c => [c.id!, c]));
+    return Object.entries(monthByCategory)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([key, spent]) => {
+        const custom = customMeta.get(key);
+        const meta = custom
+          ? { name: custom.name, colorClass: custom.colorClass, iconName: custom.iconName }
+          : displayMeta(key, tier);
+        return {
+          key,
+          name: meta.name,
+          spent,
+          limit: budgetBySlug.get(key as any) ?? 0,
+          colorClass: meta.colorClass,
+          color: hexFromColorClass(meta.colorClass),
+          iconName: meta.iconName,
+          history: series.map(p => p.byCategory[key] || 0),
+        };
+      });
+  }, [monthByCategory, categories, series, tier]);
+
+  const [showAllTx, setShowAllTx] = useState(false);
+  // "Toutes les transactions" sheet: full history, newest first, grouped by month.
+  const allTxSorted = useMemo(
+    () => [...transactions].sort((a, b) => b.date.localeCompare(a.date)),
+    [transactions]
+  );
+  const allTxGroups = useMemo(() => {
+    const groups: { label: string; items: Transaction[] }[] = [];
+    for (const t of allTxSorted) {
+      const label = new Date(t.date).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+      const last = groups[groups.length - 1];
+      if (last && last.label === label) {
+        last.items.push(t);
+      } else {
+        groups.push({ label, items: [t] });
+      }
+    }
+    return groups;
+  }, [allTxSorted]);
+
+  const [drillDown, setDrillDown] = useState<string | null>(null);
+  const drillDownCat = topCategories.find(c => c.key === drillDown);
+  const drillDownTxs = useMemo(
+    () => (drillDown ? transactionsForCategory(transactions, drillDown, 'month', monthRef, keyOf) : []),
+    [drillDown, transactions, monthRef, keyOf]
+  );
 
   return (
     <div className="flex flex-col gap-8 pb-32">
@@ -257,7 +330,7 @@ export default function Dashboard({ store }: DashboardProps) {
           </p>
         </div>
         <button 
-          onClick={store.executeAiAnalysis}
+          onClick={() => store.executeAiAnalysis()}
           disabled={store.isAiAnalyzing}
           className="w-10 h-10 hover:bg-surface-container rounded-full flex items-center justify-center transition-all active:scale-95 disabled:opacity-30"
         >
@@ -267,34 +340,129 @@ export default function Dashboard({ store }: DashboardProps) {
 
       {/* Categories Bento Grid */}
       <section>
-        <h3 className="font-display font-extrabold text-lg mb-4">Catégories</h3>
+        <div className="flex items-baseline gap-2 mb-4">
+          <h3 className="font-display font-extrabold text-lg">Catégories</h3>
+          {!isCurrentMonth && (
+            <span className="text-[10px] uppercase font-bold text-secondary tracking-wider">{monthLabel}</span>
+          )}
+        </div>
         <div className="grid grid-cols-2 gap-4">
-          {categories.map((cat) => {
-            const spent = monthByCategory[cat.name.toLowerCase()] || 0;
-            return (
-            <div key={cat.name} className="bg-surface-container-lowest p-5 rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)]">
-              <div className={`w-10 h-10 rounded-xl mb-3 flex items-center justify-center bg-opacity-10 ${cat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
-                {getIcon(cat.iconName)}
+          {topCategories.length === 0 && (
+            <p className="col-span-2 text-sm font-medium text-secondary text-center py-6">
+              Aucune dépense ce mois-ci.
+            </p>
+          )}
+          {topCategories.map((cat) => (
+            <button
+              key={cat.key}
+              onClick={() => setDrillDown(cat.key)}
+              className="bg-surface-container-lowest p-5 rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)] text-left transition-all active:scale-[0.98] hover:shadow-md"
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-opacity-10 ${cat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
+                  {getIcon(cat.iconName)}
+                </div>
+                <Sparkline values={cat.history} color={cat.color} />
               </div>
               <p className="text-[10px] uppercase font-bold text-secondary mb-0.5 tracking-wider">{cat.name}</p>
-              <p className="font-display font-extrabold text-lg">{spent.toLocaleString('fr-FR')}€</p>
+              <p className="font-display font-extrabold text-lg tabular-nums">{cat.spent.toLocaleString('fr-FR')}€</p>
               <div className="w-full h-1.5 bg-surface-container rounded-full mt-3 overflow-hidden">
                 <div
                   className={`h-full ${cat.colorClass}`}
-                  style={{ width: `${cat.limit > 0 ? Math.min(100, (spent / cat.limit) * 100) : 0}%` }}
+                  style={{ width: `${cat.limit > 0 ? Math.min(100, (cat.spent / cat.limit) * 100) : 0}%` }}
                 />
               </div>
-            </div>
-            );
-          })}
+            </button>
+          ))}
         </div>
       </section>
+
+      {/* Category Drill-down Sheet */}
+      <AnimatePresence>
+        {drillDownCat && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-end justify-center"
+            onClick={() => setDrillDown(null)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="bg-surface-container-lowest w-full max-w-lg rounded-t-3xl p-6 max-h-[75vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-opacity-10 ${drillDownCat.colorClass.replace('bg-', 'bg-opacity-10 bg-')}`}>
+                    {getIcon(drillDownCat.iconName)}
+                  </div>
+                  <div>
+                    <h3 className="font-display font-extrabold text-lg leading-tight">{drillDownCat.name}</h3>
+                    <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">{monthLabel}</p>
+                  </div>
+                </div>
+                <button onClick={() => setDrillDown(null)} className="p-2 rounded-full hover:bg-surface-container">
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="font-display font-extrabold text-2xl mb-4 tabular-nums">
+                {drillDownCat.spent.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+              </p>
+              <div className="space-y-1">
+                {drillDownTxs.map((t) => (
+                  <div key={t.id} className="flex items-center justify-between gap-2 py-2.5 border-b border-surface-container last:border-none">
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm truncate">{t.name}</p>
+                      <p className="text-[10px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {tier === 'pro' ? (
+                        // Recategorize + learn a merchant rule (pro only,
+                        // enforced server-side by Firestore rules).
+                        <select
+                          value={effectiveSlug(t)}
+                          onChange={(e) => recategorizeTransaction(t.id, e.target.value)}
+                          className="text-[9px] font-bold uppercase bg-surface-container rounded-lg px-1.5 py-1 outline-none max-w-[110px]"
+                          title="Recatégoriser"
+                        >
+                          {SYSTEM_CATEGORIES.filter((c) => !c.isIncome).map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                          {customCats.map((c) => (
+                            <option key={c.id} value={c.id!}>{c.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[8px] font-bold uppercase text-secondary/60" title="Recatégorisation réservée aux membres Pro">
+                          <Lock size={9} /> Pro
+                        </span>
+                      )}
+                      <span className="font-display font-extrabold text-sm text-red-600 tabular-nums">
+                        {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Recent Transactions */}
       <section>
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-display font-extrabold text-lg">Transactions récentes</h3>
-          <button className="text-primary text-xs font-bold uppercase tracking-wider">Tout voir</button>
+          <button
+            onClick={() => setShowAllTx(true)}
+            className="text-primary text-xs font-bold uppercase tracking-wider hover:opacity-70 active:scale-95 transition-all"
+          >
+            Tout voir
+          </button>
         </div>
         <div className="bg-surface-container-lowest rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)] divide-y divide-surface-container">
           {transactions.map((t) => (
@@ -315,6 +483,87 @@ export default function Dashboard({ store }: DashboardProps) {
           ))}
         </div>
       </section>
+
+      {/* All Transactions Sheet */}
+      <AnimatePresence>
+        {showAllTx && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-end justify-center"
+            onClick={() => setShowAllTx(false)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="bg-surface-container-lowest w-full max-w-lg rounded-t-3xl p-6 max-h-[75vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-display font-extrabold text-lg leading-tight">Toutes les transactions</h3>
+                  <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">
+                    {allTxSorted.length} transaction{allTxSorted.length > 1 ? 's' : ''}
+                  </p>
+                </div>
+                <button onClick={() => setShowAllTx(false)} className="p-2 rounded-full hover:bg-surface-container">
+                  <X size={18} />
+                </button>
+              </div>
+              {allTxGroups.length === 0 && (
+                <p className="text-sm font-medium text-secondary text-center py-6">Aucune transaction.</p>
+              )}
+              <div className="space-y-4">
+                {allTxGroups.map((group) => (
+                  <div key={group.label}>
+                    <p className="text-[10px] uppercase font-bold text-secondary tracking-wider mb-1">{group.label}</p>
+                    <div className="space-y-1">
+                      {group.items.map((t) => (
+                        <div key={t.id} className="flex items-center justify-between gap-2 py-2.5 border-b border-surface-container last:border-none">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 shrink-0 rounded-full bg-surface-container flex items-center justify-center">
+                              {getIcon(t.iconName)}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-bold text-sm truncate">{t.name}</p>
+                              <p className="text-[10px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
+                            </div>
+                          </div>
+                          <p className={`font-display font-extrabold text-sm shrink-0 tabular-nums ${t.amount < 0 ? 'text-error' : 'text-primary'}`}>
+                            {t.amount < 0 ? '-' : '+'} {Math.abs(t.amount).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+// 6-month spend sparkline: emphasized endpoint, no axes — trend at a glance.
+function Sparkline({ values, color }: { values: number[]; color: string }) {
+  const max = Math.max(...values, 1);
+  const w = 56, h = 24, pad = 3;
+  const step = values.length > 1 ? (w - pad * 2) / (values.length - 1) : 0;
+  const points = values.map((v, i) => ({
+    x: pad + i * step,
+    y: h - pad - ((h - pad * 2) * v) / max,
+  }));
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const last = points[points.length - 1];
+  return (
+    <svg width={w} height={h} aria-hidden="true" className="opacity-90">
+      <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      {last && <circle cx={last.x} cy={last.y} r="3" fill={color} />}
+    </svg>
   );
 }

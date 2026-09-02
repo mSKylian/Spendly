@@ -25,11 +25,13 @@ import {
   getDocs
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
-import { Transaction, CategoryBudget, Challenge, Account, UserProfile } from './types';
+import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement, MerchantRule } from './types';
 import { analyzeSpending } from './services/geminiService';
+import { toISODate, categorizeImport, effectiveSlug, guessSlug } from './lib/finance';
+import { categoryById, isCustomSlug, isKnownSlug, normalizeLabel, merchantRuleId, customSlugFor, MAX_CUSTOM_CATEGORIES } from './lib/taxonomy';
 
 export type SpendlyStore = {
-  balance: number;
+  balance: number; // derived: sum of account balances (== totalAssets)
   user: UserProfile | null;
   accounts: Account[];
   categories: CategoryBudget[];
@@ -38,17 +40,28 @@ export type SpendlyStore = {
   totalAssets: number;
   isLoading: boolean;
   isAiAnalyzing: boolean;
+  lastAnalysis: { at: string; newCount: number } | null;
   activateChallenge: (id: string) => Promise<void>;
   addTransaction: (t: Omit<Transaction, 'id'>) => Promise<void>;
   addAccount: (a: Omit<Account, 'id'>) => Promise<string | void>;
   deleteAccount: (id: string) => Promise<void>;
+  importStatement: (parsed: ParsedStatement, targetAccountId?: string) => Promise<string | void>;
   updateUser: (user: Partial<UserProfile>) => Promise<void>;
   login: () => Promise<void>;
   logout: () => Promise<void>;
   loginWithMagicLink: (email: string) => Promise<void>;
   seedMockData: () => Promise<void>;
   scanReceipt: (base64Image: string) => Promise<any>;
-  executeAiAnalysis: () => Promise<void>;
+  executeAiAnalysis: (force?: boolean) => Promise<void>;
+  // Pro only (enforced by Firestore rules): reassign a transaction's category
+  // and optionally learn a merchant rule from it.
+  recategorizeTransaction: (txId: string, categoryId: string, learnRule?: boolean) => Promise<void>;
+  // Pro only: create a user-defined category (custom_* slug, capped).
+  addCustomCategory: (name: string, colorClass: string, iconName: string, limit: number) => Promise<string | void>;
+  // Re-runs the deterministic pipeline (merchant rules → keyword rules) on every
+  // transaction not manually set by the user, batch-updating the ones whose
+  // slug changed. Idempotent; never touches categorySource 'user' docs.
+  reapplyCategorization: () => Promise<void>;
 };
 
 const DEFAULT_CATEGORIES: Omit<CategoryBudget, 'id'>[] = [
@@ -58,8 +71,11 @@ const DEFAULT_CATEGORIES: Omit<CategoryBudget, 'id'>[] = [
   { name: 'Abos', spent: 0, limit: 50, colorClass: 'bg-teal-500', iconName: 'play' },
 ];
 
+// New users start with one empty (unfunded) current account so they have a place to
+// record transactions. Money enters only by importing a statement or setting an
+// opening balance — never as an automatic allowance.
 const DEFAULT_ACCOUNTS: Omit<Account, 'id'>[] = [
-  { name: 'Compte Courant', bankName: 'Banque Principale', balance: 0, type: 'current', iconName: 'bank', colorClass: 'bg-blue-500' },
+  { name: 'Compte Courant', bankName: 'Banque Principale', balance: 0, type: 'current', iconName: 'bank', colorClass: 'bg-blue-500', currency: 'EUR', source: 'manual' },
 ];
 
 const DEFAULT_CHALLENGES: Omit<Challenge, 'id'>[] = [
@@ -87,14 +103,15 @@ const DEFAULT_CHALLENGES: Omit<Challenge, 'id'>[] = [
 ];
 
 export function useSpendlyStore(): SpendlyStore {
-  const [balance, setBalance] = useState(0);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<CategoryBudget[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [merchantRules, setMerchantRules] = useState<MerchantRule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
+  const [lastAnalysis, setLastAnalysis] = useState<{ at: string; newCount: number } | null>(null);
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
 
   // Auth Listener
@@ -104,7 +121,6 @@ export function useSpendlyStore(): SpendlyStore {
       if (!u) {
         setIsLoading(false);
         setUser(null);
-        setBalance(0);
         setAccounts([]);
         setCategories([]);
         setTransactions([]);
@@ -125,15 +141,13 @@ export function useSpendlyStore(): SpendlyStore {
       if (snap.exists()) {
         const data = snap.data() as UserProfile;
         setUser(data);
-        setBalance(data.balance);
       } else {
         // Initialize new user
         const newProfile: UserProfile = {
           name: fbUser.displayName || 'Utilisateur',
           email: fbUser.email || '',
           avatar: fbUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${fbUser.uid}`,
-          balance: 1000,
-          insight: 'Bienvenue sur Spendly ! Ton budget est prêt.',
+          insight: 'Bienvenue sur Spendly ! Lie un compte pour commencer.',
           tier: 'free',
           limits: { week: 400, month: 1600, year: 19200 }
         };
@@ -170,26 +184,33 @@ export function useSpendlyStore(): SpendlyStore {
       setChallenges(snap.docs.map(d => ({ id: d.id, ...d.data() } as Challenge)));
     });
 
+    // Merchant rules exist only for pro users; free users just get an empty set.
+    const unsubMerchantRules = onSnapshot(collection(db, 'users', userId, 'merchantRules'), (snap) => {
+      setMerchantRules(snap.docs.map(d => ({ id: d.id, ...d.data() } as MerchantRule)));
+    }, () => setMerchantRules([]));
+
     return () => {
       unsubProfile();
       unsubTransactions();
       unsubCategories();
       unsubAccounts();
       unsubChallenges();
+      unsubMerchantRules();
     };
   }, [fbUser]);
 
-  const executeAiAnalysis = async () => {
+  const executeAiAnalysis = async (force = false) => {
     if (!fbUser || isAiAnalyzing || transactions.length === 0) return;
-    
+
     setIsAiAnalyzing(true);
     try {
-      const result = await analyzeSpending(transactions, categories, challenges, accounts);
+      const result = await analyzeSpending(transactions, categories, challenges, accounts, force);
+      let newCount = 0;
       if (result) {
         const userId = fbUser.uid;
         const updates: any = {};
         if (result.insight) updates.insight = result.insight;
-        
+
         await updateDoc(doc(db, 'users', userId), updates);
 
         if (result.newChallenges && result.newChallenges.length > 0) {
@@ -212,11 +233,13 @@ export function useSpendlyStore(): SpendlyStore {
               }
 
               batch.set(doc(collection(db, 'users', userId, 'challenges')), challengeData);
+              newCount++;
             }
           });
           await batch.commit();
         }
       }
+      setLastAnalysis({ at: new Date().toISOString(), newCount });
     } catch (e) {
       console.error('AI Analysis failed', e);
     } finally {
@@ -273,6 +296,9 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
+  // Dev tool: replace all accounts + transactions with realistic mock "statements".
+  // Balances are reconciled (closing = opening + sum(transactions)) so every page —
+  // wallet, accounts, stats — derives the same totals. No fake user balance.
   const seedMockData = async () => {
     if (!fbUser) return;
     setIsLoading(true);
@@ -280,36 +306,63 @@ export function useSpendlyStore(): SpendlyStore {
       const userId = fbUser.uid;
       const batch = writeBatch(db);
 
-      // 1. Clear existing transactions (optional but cleaner)
-      const currentTx = await getDocs(collection(db, 'users', userId, 'transactions'));
-      currentTx.forEach(d => batch.delete(d.ref));
+      // 1. Clear existing accounts and transactions for a clean, consistent state.
+      const [txSnap, accSnap] = await Promise.all([
+        getDocs(collection(db, 'users', userId, 'transactions')),
+        getDocs(collection(db, 'users', userId, 'accounts')),
+      ]);
+      txSnap.forEach(d => batch.delete(d.ref));
+      accSnap.forEach(d => batch.delete(d.ref));
 
-      // 2. Add realistic transactions
-      const mockSales = [
-        { name: 'Cora Supermarché', amount: -145.20, category: 'Nourriture', iconName: 'shopping-cart' },
-        { name: 'Starbucks Coffee', amount: -12.50, category: 'Loisirs', iconName: 'coffee' },
-        { name: 'Uber Trip', amount: -22.00, category: 'Transport', iconName: 'car' },
-        { name: 'Cora Drive', amount: -89.40, category: 'Nourriture', iconName: 'shopping-cart' },
-        { name: 'Netflix', amount: -15.99, category: 'Abos', iconName: 'play' },
-        { name: 'Spotify', amount: -9.99, category: 'Abos', iconName: 'music' },
-        { name: 'Apple.com', amount: -2.99, category: 'Abos', iconName: 'cloud' },
-        { name: 'Cora Cafétéria', amount: -18.50, category: 'Nourriture', iconName: 'utensils' },
-        { name: 'Lidl', amount: -42.10, category: 'Nourriture', iconName: 'shopping-bag' },
-        { name: 'Amazon Support', amount: -49.00, category: 'Loisirs', iconName: 'package' }
+      // Spread transactions over recent days but keep them within the current
+      // calendar month, so the (monthly) dashboard always shows seeded data.
+      const monthStart = new Date();
+      monthStart.setHours(0, 0, 0, 0);
+      monthStart.setDate(1);
+      const daysAgo = (n: number) => new Date(Math.max(Date.now() - n * 86400000, monthStart.getTime())).toISOString();
+
+      // 2. Mock statements: each account's balance is derived from its transactions.
+      const statements = [
+        {
+          account: { name: 'Compte Courant', bankName: 'BNP Paribas', type: 'current' as const, iconName: 'bank' as const, colorClass: 'bg-blue-500', currency: 'EUR', ibanLast4: '1234', source: 'import' as const, openingBalance: 800 },
+          txs: [
+            { name: 'Virement Salaire', amount: 2100, category: 'Revenus', iconName: 'zap', day: 20 },
+            { name: 'Carrefour', amount: -85.40, category: 'Nourriture', iconName: 'shopping-cart', day: 18 },
+            { name: 'SNCF', amount: -45.00, category: 'Transport', iconName: 'car', day: 15 },
+            { name: 'EDF', amount: -62.30, category: 'Abos', iconName: 'cloud', day: 12 },
+            { name: 'Netflix', amount: -15.99, category: 'Abos', iconName: 'play', day: 9 },
+            { name: 'Le Bistrot', amount: -34.50, category: 'Loisirs', iconName: 'utensils', day: 5 },
+            { name: 'Total Energies', amount: -70.00, category: 'Transport', iconName: 'car', day: 2 },
+          ],
+        },
+        {
+          account: { name: 'PayPal', bankName: 'PayPal', type: 'paypal' as const, iconName: 'wallet' as const, colorClass: 'bg-indigo-600', currency: 'EUR', source: 'import' as const, openingBalance: 50 },
+          txs: [
+            { name: 'Spotify', amount: -9.99, category: 'Abos', iconName: 'music', day: 10 },
+            { name: 'Vinted', amount: 24.00, category: 'Revenus', iconName: 'zap', day: 7 },
+            { name: 'Amazon', amount: -39.90, category: 'Loisirs', iconName: 'package', day: 3 },
+          ],
+        },
       ];
 
-      const accId = accounts[0]?.id;
-      mockSales.forEach((s, i) => {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        const transRef = doc(collection(db, 'users', userId, 'transactions'));
-        batch.set(transRef, {
-          ...s,
-          accountId: accId,
-          date: date.toISOString(),
-          status: 'completed'
-        });
-      });
+      for (const s of statements) {
+        const closing = s.txs.reduce((sum, t) => sum + t.amount, s.account.openingBalance);
+        const accRef = doc(collection(db, 'users', userId, 'accounts'));
+        batch.set(accRef, { ...s.account, balance: Math.round(closing * 100) / 100 });
+        for (const t of s.txs) {
+          const txRef = doc(collection(db, 'users', userId, 'transactions'));
+          batch.set(txRef, {
+            name: t.name,
+            amount: t.amount,
+            category: t.category,
+            iconName: t.iconName,
+            date: daysAgo(t.day),
+            status: 'completed',
+            accountId: accRef.id,
+            rawLabel: t.name,
+          });
+        }
+      }
 
       await batch.commit();
       // Analysis will trigger automatically via useEffect
@@ -317,6 +370,78 @@ export function useSpendlyStore(): SpendlyStore {
       console.error('Seeding error:', e);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Import a parsed bank statement. With no targetAccountId, a new account is created
+  // (balance = statement closing balance). With a targetAccountId, the statement's
+  // transactions are appended to that existing account and its balance is set to the
+  // statement's closing balance. Either way the wallet total re-derives from accounts.
+  const importStatement = async (parsed: ParsedStatement, targetAccountId?: string) => {
+    if (!fbUser) return;
+    const userId = fbUser.uid;
+    const clampBalance = (n: number) => Math.max(-1000000, Math.min(10000000, Number(n) || 0));
+    const clampAmount = (n: number) => Math.max(-100000, Math.min(100000, Number(n) || 0));
+    try {
+      const batch = writeBatch(db);
+      let accountId: string;
+
+      if (targetAccountId) {
+        // Import into an existing account: set its balance to the statement's close.
+        accountId = targetAccountId;
+        batch.update(doc(db, 'users', userId, 'accounts', targetAccountId), {
+          balance: clampBalance(parsed.account.closingBalance),
+        });
+      } else {
+        const accRef = doc(collection(db, 'users', userId, 'accounts'));
+        accountId = accRef.id;
+        const accountDoc: any = {
+          name: (parsed.account.name || 'Compte importé').slice(0, 100),
+          bankName: (parsed.account.bankName || 'Banque').slice(0, 100),
+          balance: clampBalance(parsed.account.closingBalance),
+          type: 'current',
+          iconName: 'bank',
+          colorClass: 'bg-blue-500',
+          currency: (parsed.account.currency || 'EUR').slice(0, 8),
+          source: 'import',
+        };
+        if (typeof parsed.account.openingBalance === 'number') {
+          accountDoc.openingBalance = clampBalance(parsed.account.openingBalance);
+        }
+        if (parsed.account.ibanLast4) {
+          accountDoc.ibanLast4 = String(parsed.account.ibanLast4).slice(-4);
+        }
+        batch.set(accRef, accountDoc);
+      }
+
+      // Firestore batches cap at 500 writes; keep well under with the account included.
+      // Categorization pipeline (docs/CATEGORY_ENGINE.md): merchant rule →
+      // LLM-provided slug → keyword rules → default.
+      const rules = new Map(merchantRules.map(r => [r.normalizedLabel, r.categoryId]));
+      for (const t of parsed.transactions.slice(0, 480)) {
+        const txRef = doc(collection(db, 'users', userId, 'transactions'));
+        const label = (t.label || 'Transaction').slice(0, 100);
+        const { categoryId, categorySource, category } = categorizeImport(
+          label, t.amount, t.category, rules, normalizeLabel(label)
+        );
+        batch.set(txRef, {
+          name: label,
+          amount: clampAmount(t.amount),
+          category,
+          categoryId,
+          categorySource,
+          iconName: categoryById(categoryId)?.iconName ?? (t.amount >= 0 ? 'zap' : 'shopping-cart'),
+          date: toISODate(t.date),
+          status: 'completed',
+          accountId,
+          rawLabel: (t.label || '').slice(0, 200),
+        });
+      }
+
+      await batch.commit();
+      return accountId;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/accounts`);
     }
   };
 
@@ -415,14 +540,10 @@ export function useSpendlyStore(): SpendlyStore {
       if (challenge.status === 'available') {
         await updateDoc(doc(db, path), { status: 'in_progress' });
       } else if (challenge.status === 'in_progress') {
-        const userPath = `users/${fbUser.uid}`;
-        await runTransaction(db, async (tx) => {
-          const userSnap = await tx.get(doc(db, userPath));
-          if (!userSnap.exists()) throw new Error('User not found');
-          const currentBalance = userSnap.data().balance;
-          tx.update(doc(db, userPath), { balance: currentBalance + challenge.potentialSaving });
-          tx.update(doc(db, path), { status: 'completed', progress: 100 });
-        });
+        // Completing a challenge is a gamification milestone only — it never credits
+        // real money. "Total saved" is derived from completed challenges for display.
+        // completedAt anchors the data-verified saving check (lib/finance).
+        await updateDoc(doc(db, path), { status: 'completed', progress: 100, completedAt: new Date().toISOString() });
       }
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, path);
@@ -435,10 +556,8 @@ export function useSpendlyStore(): SpendlyStore {
     try {
       await runTransaction(db, async (tx) => {
         // --- READS ---
-        const userRef = doc(db, 'users', userId);
-        const userSnap = await tx.get(userRef);
-        if (!userSnap.exists()) throw new Error('User not found');
-        
+        // The wallet balance is derived from account balances, so a transaction only
+        // adjusts its owning account (see docs/DATA_MODEL.md). No user.balance to touch.
         let accountRef = null;
         let accountSnap = null;
         if (t.accountId) {
@@ -447,8 +566,6 @@ export function useSpendlyStore(): SpendlyStore {
         }
 
         // --- WRITES ---
-        tx.update(userRef, { balance: userSnap.data().balance + t.amount });
-
         const transRef = doc(collection(db, 'users', userId, 'transactions'));
         tx.set(transRef, t);
 
@@ -464,7 +581,125 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
+  // Pro only — Firestore rules reject categorySource 'user' and merchantRules
+  // writes for free users. Reassigns the category and (by default) learns a
+  // merchant rule so future imports of the same label are classified the same.
+  const recategorizeTransaction = async (txId: string, categoryId: string, learnRule = true) => {
+    if (!fbUser || user?.tier !== 'pro' || !isKnownSlug(categoryId)) return;
+    const userId = fbUser.uid;
+    // System slugs resolve from the taxonomy; custom slugs from the user's docs.
+    const meta = categoryById(categoryId)
+      ?? (isCustomSlug(categoryId) ? categories.find(c => c.id === categoryId) : undefined);
+    if (!meta) return;
+    try {
+      await updateDoc(doc(db, 'users', userId, 'transactions', txId), {
+        category: meta.name,
+        categoryId,
+        categorySource: 'user',
+        iconName: meta.iconName,
+      });
+      if (learnRule) {
+        const t = transactions.find(x => x.id === txId);
+        const normalized = normalizeLabel(t?.rawLabel || t?.name || '');
+        if (normalized) {
+          await setDoc(doc(db, 'users', userId, 'merchantRules', merchantRuleId(normalized)), {
+            normalizedLabel: normalized,
+            categoryId,
+            createdAt: new Date().toISOString(),
+          });
+          // Apply the newly learned rule to every other matching transaction right
+          // away — don't wait on the merchantRules snapshot listener to catch up.
+          await reapplyCategorization({ normalizedLabel: normalized, categoryId, excludeTxId: txId });
+        }
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions/${txId}`);
+    }
+  };
+
+  // Pro only — creates categories/{custom_slug} (rules gate custom_* ids on
+  // tier). Capped client-side at MAX_CUSTOM_CATEGORIES.
+  const addCustomCategory = async (name: string, colorClass: string, iconName: string, limit: number) => {
+    if (!fbUser || user?.tier !== 'pro' || !name.trim()) return;
+    const customCount = categories.filter(c => c.id && isCustomSlug(c.id)).length;
+    if (customCount >= MAX_CUSTOM_CATEGORIES) return;
+    const slug = customSlugFor(name);
+    const userId = fbUser.uid;
+    try {
+      await setDoc(doc(db, 'users', userId, 'categories', slug), {
+        name: name.trim().slice(0, 50),
+        spent: 0, // legacy field required by rules; derived at read time
+        limit: Math.max(0, Number(limit) || 0),
+        colorClass,
+        iconName,
+      });
+      await reapplyCategorization();
+      return slug;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/categories/${slug}`);
+    }
+  };
+
+  // Re-runs the deterministic categorization pipeline (merchant rules → keyword
+  // rules, docs/CATEGORY_ENGINE.md) against every transaction whose category
+  // wasn't set manually, so a new merchant rule or category immediately
+  // reclassifies existing data instead of only affecting future imports.
+  // `justLearned` lets a just-written merchant rule take effect before the
+  // merchantRules snapshot listener has caught up. Idempotent: only touches
+  // transactions whose resulting slug actually differs from their current one.
+  const reapplyCategorization = async (justLearned?: { normalizedLabel: string; categoryId: string; excludeTxId?: string }) => {
+    if (!fbUser) return;
+    const userId = fbUser.uid;
+    const rules = new Map(merchantRules.map(r => [r.normalizedLabel, r.categoryId]));
+    if (justLearned) rules.set(justLearned.normalizedLabel, justLearned.categoryId);
+
+    const metaFor = (slug: string) =>
+      categoryById(slug) ?? (isCustomSlug(slug) ? categories.find(c => c.id === slug) : undefined);
+
+    const updates: Array<{ id: string; categoryId: string; category: string; iconName: string }> = [];
+    for (const t of transactions) {
+      if (t.categorySource === 'user') continue; // manual overrides always win
+      // The transaction that triggered this reapply was just set to 'user', but
+      // the local snapshot may not reflect that yet — never downgrade it.
+      if (justLearned?.excludeTxId && t.id === justLearned.excludeTxId) continue;
+      const label = t.rawLabel || t.name || '';
+      const normalized = normalizeLabel(label);
+      const ruled = rules.get(normalized);
+      let nextSlug: string | undefined;
+      if (ruled && isKnownSlug(ruled)) {
+        nextSlug = ruled;
+      } else if (t.amount < 0) {
+        const guessed = guessSlug(label);
+        if (guessed !== 'autre') nextSlug = guessed;
+      }
+      if (!nextSlug || nextSlug === effectiveSlug(t)) continue;
+      const meta = metaFor(nextSlug);
+      if (!meta) continue;
+      updates.push({ id: t.id, categoryId: nextSlug, category: meta.name, iconName: meta.iconName });
+    }
+    if (updates.length === 0) return;
+
+    try {
+      for (let i = 0; i < updates.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const u of updates.slice(i, i + 400)) {
+          batch.update(doc(db, 'users', userId, 'transactions', u.id), {
+            category: u.category,
+            categoryId: u.categoryId,
+            categorySource: 'rule',
+            iconName: u.iconName,
+          });
+        }
+        await batch.commit();
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions`);
+    }
+  };
+
   const totalAssets = useMemo(() => accounts.reduce((acc, curr) => acc + curr.balance, 0), [accounts]);
+  // The wallet/main balance IS the sum of account balances — one source, so pages agree.
+  const balance = totalAssets;
 
   return {
     balance,
@@ -476,17 +711,22 @@ export function useSpendlyStore(): SpendlyStore {
     totalAssets,
     isLoading,
     isAiAnalyzing,
+    lastAnalysis,
     activateChallenge,
     addTransaction,
     addAccount,
     deleteAccount,
+    importStatement,
     updateUser,
     login,
     logout,
     loginWithMagicLink,
     seedMockData,
     scanReceipt,
-    executeAiAnalysis
+    executeAiAnalysis,
+    recategorizeTransaction,
+    addCustomCategory,
+    reapplyCategorization
   };
 }
 

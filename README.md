@@ -7,7 +7,7 @@ Spendly est une application mobile et web de gestion financière personnelle qui
 - 📊 **Tableau de bord visuel** — Visualise tes dépenses par catégorie avec des barres de progression colorées, comme un temps d'écran pour tes finances
 - 🤖 **Conseiller IA personnalisé** — Un moteur d'analyse IA détecte tes habitudes et génère des recommandations concrètes (carte de fidélité, abonnement partagé, alternatives moins chères...)
 - 💡 **Page Alternatives** — Découvre combien tu pourrais économiser chaque mois avec des conseils adaptés à tes vrais achats
-- 🔗 **Connexion bancaire sécurisée** — Connecte ton compte via IBAN ou PayPal grâce à l'API Nordigen (conforme DSP2)
+- 🔗 **Comptes bancaires** — Lie un compte de trois façons : *Connecter* (Compte Courant, PayPal, Livret A, Crypto), *Importer un relevé* (CSV, OFX, QIF, PDF ou photo — formats structurés analysés localement, PDF/images via l'IA), ou *Manuel* (solde d'ouverture). Clique un compte pour voir ses transactions et y importer un relevé. Les soldes proviennent des relevés — l'argent vient toujours de tes comptes réels (voir [docs/DATA_MODEL.md](docs/DATA_MODEL.md)). Exemples dans [`examples/statements/`](examples/statements/).
 - 🔒 **Magic Link** — Connexion sans mot de passe via Firebase Authentication
 - ⚙️ **Panneau d'administration** — Configure ton fournisseur IA préféré (Gemini, OpenAI, Anthropic, OpenRouter, ou un modèle local via Ollama/LM Studio)
 
@@ -38,6 +38,12 @@ Les clés API cloud sont chiffrées en **AES-256** côté serveur. Les modèles 
 | Hébergement | Vercel |
 
 ## 🚀 Lancer le projet en local
+
+> **Vous faisiez déjà tourner Spendly ?** La configuration et le modèle de
+> données ont changé (`.env` unique, moteur de catégories, nouvelles règles
+> Firestore). Suivez **[MIGRATION.md](MIGRATION.md)** pour mettre à jour votre
+> instance — le guide est autoportant et peut être confié tel quel à un agent
+> (Google AI Studio, Claude, …).
 
 ```bash
 # Cloner le repo
