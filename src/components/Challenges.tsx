@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Trophy, ShoppingCart, Tv, Zap, Car, Utensils, Wifi, HeartPulse, Plane, Home, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import { categoryById } from '../lib/taxonomy';
@@ -35,12 +35,16 @@ export default function Challenges({ store }: ChallengesProps) {
   const { user, challenges, transactions, activateChallenge, executeAiAnalysis, isAiAnalyzing, lastAnalysis } = store;
   const [filter, setFilter] = useState<string>('Tous');
   const [showAnalysisMsg, setShowAnalysisMsg] = useState(false);
+  // Only surface the completion message for analyses triggered from THIS
+  // button — the store also auto-runs analyses on load/data changes.
+  const analysisTriggeredHere = React.useRef(false);
 
   // Surface a small transient message once an analysis completes — a forced
   // click otherwise gives no visible feedback beyond the spinner stopping.
   const lastAnalysisAt = lastAnalysis?.at;
   React.useEffect(() => {
-    if (!lastAnalysisAt) return;
+    if (!lastAnalysisAt || !analysisTriggeredHere.current) return;
+    analysisTriggeredHere.current = false;
     setShowAnalysisMsg(true);
     const timeout = setTimeout(() => setShowAnalysisMsg(false), 4000);
     return () => clearTimeout(timeout);
@@ -89,7 +93,7 @@ export default function Challenges({ store }: ChallengesProps) {
       {/* Jackpot Banner */}
       <section className="mt-4">
         <div className="bg-gradient-to-br from-primary-container to-primary text-white p-6 rounded-2xl shadow-xl relative overflow-hidden transition-transform active:scale-[0.99]">
-          <div className="flex items-center justify-between relative z-10 mb-6">
+          <div className="flex items-center justify-between relative z-10 mb-2">
             <div>
               <p className="text-[10px] uppercase font-bold tracking-widest opacity-80 mb-1">Cagnotte à débloquer</p>
               <h2 className="font-display text-3xl font-extrabold tracking-tight text-white">{potentialSavingsTotal.toLocaleString('fr-FR')} € <span className="text-lg font-normal opacity-70">/mois</span></h2>
@@ -106,7 +110,7 @@ export default function Challenges({ store }: ChallengesProps) {
               </div>
             </div>
             <button
-              onClick={() => executeAiAnalysis(true)}
+              onClick={() => { analysisTriggeredHere.current = true; executeAiAnalysis(true); }}
               disabled={isAiAnalyzing}
               className={`bg-white/20 backdrop-blur-md p-4 rounded-2xl border border-white/20 transition-all active:scale-95 group
                 ${isAiAnalyzing ? 'opacity-50' : 'hover:bg-white/30'}`}
@@ -117,6 +121,24 @@ export default function Challenges({ store }: ChallengesProps) {
                 <Sparkles size={32} className="text-white fill-white/20 group-hover:scale-110 transition-transform" />
               )}
             </button>
+          </div>
+          {/* Fixed-height status line: the completion message fades in and out
+              here without shifting the card or the content below it. */}
+          <div className="h-4 relative z-10 flex items-center">
+            <AnimatePresence>
+              {showAnalysisMsg && lastAnalysis && (
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="text-[9px] uppercase font-bold tracking-widest text-white/80"
+                >
+                  {lastAnalysis.newCount > 0
+                    ? `Analyse terminée · ${lastAnalysis.newCount} nouvelle${lastAnalysis.newCount > 1 ? 's' : ''} économie${lastAnalysis.newCount > 1 ? 's' : ''}`
+                    : 'Analyse terminée · aucune nouvelle recommandation'}
+                </motion.p>
+              )}
+            </AnimatePresence>
           </div>
           {/* Decorative element */}
           <div className="absolute -right-6 -top-6 w-24 h-24 bg-white/10 rounded-full blur-2xl" />
@@ -129,18 +151,6 @@ export default function Challenges({ store }: ChallengesProps) {
             />
           )}
         </div>
-        {showAnalysisMsg && lastAnalysis && (
-          <motion.p
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="text-[10px] uppercase font-bold tracking-widest text-secondary mt-2 text-center"
-          >
-            {lastAnalysis.newCount > 0
-              ? `Analyse terminée · ${lastAnalysis.newCount} nouvelle${lastAnalysis.newCount > 1 ? 's' : ''} économie${lastAnalysis.newCount > 1 ? 's' : ''}`
-              : 'Analyse terminée · aucune nouvelle recommandation'}
-          </motion.p>
-        )}
       </section>
 
       {/* Filter Pills */}
