@@ -25,9 +25,10 @@ import {
   getDocs
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
-import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement } from './types';
+import { Transaction, CategoryBudget, Challenge, Account, UserProfile, ParsedStatement, MerchantRule } from './types';
 import { analyzeSpending } from './services/geminiService';
-import { toISODate, guessCategory } from './lib/finance';
+import { toISODate, categorizeImport, effectiveSlug, guessSlug } from './lib/finance';
+import { categoryById, isCustomSlug, isKnownSlug, normalizeLabel, merchantRuleId, customSlugFor, MAX_CUSTOM_CATEGORIES } from './lib/taxonomy';
 
 export type SpendlyStore = {
   balance: number; // derived: sum of account balances (== totalAssets)
@@ -39,6 +40,7 @@ export type SpendlyStore = {
   totalAssets: number;
   isLoading: boolean;
   isAiAnalyzing: boolean;
+  lastAnalysis: { at: string; newCount: number } | null;
   activateChallenge: (id: string) => Promise<void>;
   addTransaction: (t: Omit<Transaction, 'id'>) => Promise<void>;
   addAccount: (a: Omit<Account, 'id'>) => Promise<string | void>;
@@ -50,7 +52,16 @@ export type SpendlyStore = {
   loginWithMagicLink: (email: string) => Promise<void>;
   seedMockData: () => Promise<void>;
   scanReceipt: (base64Image: string) => Promise<any>;
-  executeAiAnalysis: () => Promise<void>;
+  executeAiAnalysis: (force?: boolean) => Promise<void>;
+  // Pro only (enforced by Firestore rules): reassign a transaction's category
+  // and optionally learn a merchant rule from it.
+  recategorizeTransaction: (txId: string, categoryId: string, learnRule?: boolean) => Promise<void>;
+  // Pro only: create a user-defined category (custom_* slug, capped).
+  addCustomCategory: (name: string, colorClass: string, iconName: string, limit: number) => Promise<string | void>;
+  // Re-runs the deterministic pipeline (merchant rules → keyword rules) on every
+  // transaction not manually set by the user, batch-updating the ones whose
+  // slug changed. Idempotent; never touches categorySource 'user' docs.
+  reapplyCategorization: () => Promise<void>;
 };
 
 const DEFAULT_CATEGORIES: Omit<CategoryBudget, 'id'>[] = [
@@ -97,8 +108,10 @@ export function useSpendlyStore(): SpendlyStore {
   const [categories, setCategories] = useState<CategoryBudget[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [merchantRules, setMerchantRules] = useState<MerchantRule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
+  const [lastAnalysis, setLastAnalysis] = useState<{ at: string; newCount: number } | null>(null);
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
 
   // Auth Listener
@@ -171,26 +184,33 @@ export function useSpendlyStore(): SpendlyStore {
       setChallenges(snap.docs.map(d => ({ id: d.id, ...d.data() } as Challenge)));
     });
 
+    // Merchant rules exist only for pro users; free users just get an empty set.
+    const unsubMerchantRules = onSnapshot(collection(db, 'users', userId, 'merchantRules'), (snap) => {
+      setMerchantRules(snap.docs.map(d => ({ id: d.id, ...d.data() } as MerchantRule)));
+    }, () => setMerchantRules([]));
+
     return () => {
       unsubProfile();
       unsubTransactions();
       unsubCategories();
       unsubAccounts();
       unsubChallenges();
+      unsubMerchantRules();
     };
   }, [fbUser]);
 
-  const executeAiAnalysis = async () => {
+  const executeAiAnalysis = async (force = false) => {
     if (!fbUser || isAiAnalyzing || transactions.length === 0) return;
-    
+
     setIsAiAnalyzing(true);
     try {
-      const result = await analyzeSpending(transactions, categories, challenges, accounts);
+      const result = await analyzeSpending(transactions, categories, challenges, accounts, force);
+      let newCount = 0;
       if (result) {
         const userId = fbUser.uid;
         const updates: any = {};
         if (result.insight) updates.insight = result.insight;
-        
+
         await updateDoc(doc(db, 'users', userId), updates);
 
         if (result.newChallenges && result.newChallenges.length > 0) {
@@ -213,11 +233,13 @@ export function useSpendlyStore(): SpendlyStore {
               }
 
               batch.set(doc(collection(db, 'users', userId, 'challenges')), challengeData);
+              newCount++;
             }
           });
           await batch.commit();
         }
       }
+      setLastAnalysis({ at: new Date().toISOString(), newCount });
     } catch (e) {
       console.error('AI Analysis failed', e);
     } finally {
@@ -393,19 +415,22 @@ export function useSpendlyStore(): SpendlyStore {
       }
 
       // Firestore batches cap at 500 writes; keep well under with the account included.
+      // Categorization pipeline (docs/CATEGORY_ENGINE.md): merchant rule →
+      // LLM-provided slug → keyword rules → default.
+      const rules = new Map(merchantRules.map(r => [r.normalizedLabel, r.categoryId]));
       for (const t of parsed.transactions.slice(0, 480)) {
         const txRef = doc(collection(db, 'users', userId, 'transactions'));
         const label = (t.label || 'Transaction').slice(0, 100);
-        // Income keeps 'Revenus'; expenses are auto-categorized from the label so
-        // imported spend lands in real budget categories, not a catch-all.
-        const category = t.category
-          ? t.category.slice(0, 50)
-          : (t.amount >= 0 ? 'Revenus' : guessCategory(label));
+        const { categoryId, categorySource, category } = categorizeImport(
+          label, t.amount, t.category, rules, normalizeLabel(label)
+        );
         batch.set(txRef, {
           name: label,
           amount: clampAmount(t.amount),
           category,
-          iconName: t.amount >= 0 ? 'zap' : 'shopping-cart',
+          categoryId,
+          categorySource,
+          iconName: categoryById(categoryId)?.iconName ?? (t.amount >= 0 ? 'zap' : 'shopping-cart'),
           date: toISODate(t.date),
           status: 'completed',
           accountId,
@@ -517,7 +542,8 @@ export function useSpendlyStore(): SpendlyStore {
       } else if (challenge.status === 'in_progress') {
         // Completing a challenge is a gamification milestone only — it never credits
         // real money. "Total saved" is derived from completed challenges for display.
-        await updateDoc(doc(db, path), { status: 'completed', progress: 100 });
+        // completedAt anchors the data-verified saving check (lib/finance).
+        await updateDoc(doc(db, path), { status: 'completed', progress: 100, completedAt: new Date().toISOString() });
       }
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, path);
@@ -555,6 +581,122 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
+  // Pro only — Firestore rules reject categorySource 'user' and merchantRules
+  // writes for free users. Reassigns the category and (by default) learns a
+  // merchant rule so future imports of the same label are classified the same.
+  const recategorizeTransaction = async (txId: string, categoryId: string, learnRule = true) => {
+    if (!fbUser || user?.tier !== 'pro' || !isKnownSlug(categoryId)) return;
+    const userId = fbUser.uid;
+    // System slugs resolve from the taxonomy; custom slugs from the user's docs.
+    const meta = categoryById(categoryId)
+      ?? (isCustomSlug(categoryId) ? categories.find(c => c.id === categoryId) : undefined);
+    if (!meta) return;
+    try {
+      await updateDoc(doc(db, 'users', userId, 'transactions', txId), {
+        category: meta.name,
+        categoryId,
+        categorySource: 'user',
+        iconName: meta.iconName,
+      });
+      if (learnRule) {
+        const t = transactions.find(x => x.id === txId);
+        const normalized = normalizeLabel(t?.rawLabel || t?.name || '');
+        if (normalized) {
+          await setDoc(doc(db, 'users', userId, 'merchantRules', merchantRuleId(normalized)), {
+            normalizedLabel: normalized,
+            categoryId,
+            createdAt: new Date().toISOString(),
+          });
+          // Apply the newly learned rule to every other matching transaction right
+          // away — don't wait on the merchantRules snapshot listener to catch up.
+          await reapplyCategorization({ normalizedLabel: normalized, categoryId, excludeTxId: txId });
+        }
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions/${txId}`);
+    }
+  };
+
+  // Pro only — creates categories/{custom_slug} (rules gate custom_* ids on
+  // tier). Capped client-side at MAX_CUSTOM_CATEGORIES.
+  const addCustomCategory = async (name: string, colorClass: string, iconName: string, limit: number) => {
+    if (!fbUser || user?.tier !== 'pro' || !name.trim()) return;
+    const customCount = categories.filter(c => c.id && isCustomSlug(c.id)).length;
+    if (customCount >= MAX_CUSTOM_CATEGORIES) return;
+    const slug = customSlugFor(name);
+    const userId = fbUser.uid;
+    try {
+      await setDoc(doc(db, 'users', userId, 'categories', slug), {
+        name: name.trim().slice(0, 50),
+        spent: 0, // legacy field required by rules; derived at read time
+        limit: Math.max(0, Number(limit) || 0),
+        colorClass,
+        iconName,
+      });
+      await reapplyCategorization();
+      return slug;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/categories/${slug}`);
+    }
+  };
+
+  // Re-runs the deterministic categorization pipeline (merchant rules → keyword
+  // rules, docs/CATEGORY_ENGINE.md) against every transaction whose category
+  // wasn't set manually, so a new merchant rule or category immediately
+  // reclassifies existing data instead of only affecting future imports.
+  // `justLearned` lets a just-written merchant rule take effect before the
+  // merchantRules snapshot listener has caught up. Idempotent: only touches
+  // transactions whose resulting slug actually differs from their current one.
+  const reapplyCategorization = async (justLearned?: { normalizedLabel: string; categoryId: string; excludeTxId?: string }) => {
+    if (!fbUser) return;
+    const userId = fbUser.uid;
+    const rules = new Map(merchantRules.map(r => [r.normalizedLabel, r.categoryId]));
+    if (justLearned) rules.set(justLearned.normalizedLabel, justLearned.categoryId);
+
+    const metaFor = (slug: string) =>
+      categoryById(slug) ?? (isCustomSlug(slug) ? categories.find(c => c.id === slug) : undefined);
+
+    const updates: Array<{ id: string; categoryId: string; category: string; iconName: string }> = [];
+    for (const t of transactions) {
+      if (t.categorySource === 'user') continue; // manual overrides always win
+      // The transaction that triggered this reapply was just set to 'user', but
+      // the local snapshot may not reflect that yet — never downgrade it.
+      if (justLearned?.excludeTxId && t.id === justLearned.excludeTxId) continue;
+      const label = t.rawLabel || t.name || '';
+      const normalized = normalizeLabel(label);
+      const ruled = rules.get(normalized);
+      let nextSlug: string | undefined;
+      if (ruled && isKnownSlug(ruled)) {
+        nextSlug = ruled;
+      } else if (t.amount < 0) {
+        const guessed = guessSlug(label);
+        if (guessed !== 'autre') nextSlug = guessed;
+      }
+      if (!nextSlug || nextSlug === effectiveSlug(t)) continue;
+      const meta = metaFor(nextSlug);
+      if (!meta) continue;
+      updates.push({ id: t.id, categoryId: nextSlug, category: meta.name, iconName: meta.iconName });
+    }
+    if (updates.length === 0) return;
+
+    try {
+      for (let i = 0; i < updates.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const u of updates.slice(i, i + 400)) {
+          batch.update(doc(db, 'users', userId, 'transactions', u.id), {
+            category: u.category,
+            categoryId: u.categoryId,
+            categorySource: 'rule',
+            iconName: u.iconName,
+          });
+        }
+        await batch.commit();
+      }
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, `users/${userId}/transactions`);
+    }
+  };
+
   const totalAssets = useMemo(() => accounts.reduce((acc, curr) => acc + curr.balance, 0), [accounts]);
   // The wallet/main balance IS the sum of account balances — one source, so pages agree.
   const balance = totalAssets;
@@ -569,6 +711,7 @@ export function useSpendlyStore(): SpendlyStore {
     totalAssets,
     isLoading,
     isAiAnalyzing,
+    lastAnalysis,
     activateChallenge,
     addTransaction,
     addAccount,
@@ -580,7 +723,10 @@ export function useSpendlyStore(): SpendlyStore {
     loginWithMagicLink,
     seedMockData,
     scanReceipt,
-    executeAiAnalysis
+    executeAiAnalysis,
+    recategorizeTransaction,
+    addCustomCategory,
+    reapplyCategorization
   };
 }
 

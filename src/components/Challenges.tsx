@@ -1,24 +1,91 @@
-import React, { useState } from 'react';
-import { motion } from 'motion/react';
-import { Trophy, ShoppingCart, Tv, Zap, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Trophy, ShoppingCart, Tv, Zap, Car, Utensils, Wifi, HeartPulse, Plane, Home, ChevronRight, Rocket, Lock, CheckCircle, Sparkles, Wallet } from 'lucide-react';
 import { SpendlyStore } from '../store';
+import { categoryById } from '../lib/taxonomy';
+import { verifyChallengeSaving } from '../lib/finance';
+import type { Challenge } from '../types';
 
 interface ChallengesProps {
   store: SpendlyStore;
 }
 
+/** Display label for a challenge's category: taxonomy name when categoryId is set. */
+function challengeCategoryLabel(c: Challenge): string {
+  return (c.categoryId && categoryById(c.categoryId)?.name) || c.category;
+}
+
+// Icon for a challenge category — matched loosely on the (LLM-provided) name,
+// with a generic fallback so no category renders without an icon.
+function categoryIcon(category: string, size = 24) {
+  const key = category.toLowerCase();
+  if (key.includes('course') || key.includes('aliment') || key.includes('nourriture')) return <ShoppingCart size={size} />;
+  if (key.includes('abo') || key.includes('streaming')) return <Tv size={size} />;
+  if (key.includes('énergie') || key.includes('energie') || key.includes('électric')) return <Zap size={size} />;
+  if (key.includes('télécom') || key.includes('telecom') || key.includes('internet') || key.includes('mobile')) return <Wifi size={size} />;
+  if (key.includes('transport') || key.includes('auto') || key.includes('carburant')) return <Car size={size} />;
+  if (key.includes('restau') || key.includes('loisir')) return <Utensils size={size} />;
+  if (key.includes('santé') || key.includes('sante')) return <HeartPulse size={size} />;
+  if (key.includes('voyage')) return <Plane size={size} />;
+  if (key.includes('logement') || key.includes('loyer')) return <Home size={size} />;
+  return <Sparkles size={size} />;
+}
+
 export default function Challenges({ store }: ChallengesProps) {
-  const { user, challenges, activateChallenge, executeAiAnalysis, isAiAnalyzing } = store;
-  const [filter, setFilter] = useState<'Tous' | 'IA' | 'Courses' | 'Abonnements' | 'Énergie'>('Tous');
+  const { user, challenges, transactions, activateChallenge, executeAiAnalysis, isAiAnalyzing, lastAnalysis } = store;
+  const [filter, setFilter] = useState<string>('Tous');
+  const [showAnalysisMsg, setShowAnalysisMsg] = useState(false);
+  // Only surface the completion message for analyses triggered from THIS
+  // button — the store also auto-runs analyses on load/data changes.
+  const analysisTriggeredHere = React.useRef(false);
+
+  // Surface a small transient message once an analysis completes — a forced
+  // click otherwise gives no visible feedback beyond the spinner stopping.
+  const lastAnalysisAt = lastAnalysis?.at;
+  React.useEffect(() => {
+    if (!lastAnalysisAt || !analysisTriggeredHere.current) return;
+    analysisTriggeredHere.current = false;
+    setShowAnalysisMsg(true);
+    const timeout = setTimeout(() => setShowAnalysisMsg(false), 4000);
+    return () => clearTimeout(timeout);
+  }, [lastAnalysisAt]);
+
+  // Data-verified savings: compare the category's real monthly spend before vs
+  // after completion (lib/finance.verifyChallengeSaving). Null = pending.
+  const verifications = useMemo(() => {
+    const out = new Map<string, ReturnType<typeof verifyChallengeSaving>>();
+    for (const c of challenges) {
+      if (c.status === 'completed' && c.categoryId && c.completedAt) {
+        out.set(c.id, verifyChallengeSaving(transactions, c.categoryId, c.completedAt));
+      }
+    }
+    return out;
+  }, [challenges, transactions]);
+
+  const completedFooter = (c: Challenge): string => {
+    const v = verifications.get(c.id);
+    if (v == null) return `Gain estimé : ${c.potentialSaving * 12}€ / an · vérification au prochain mois complet`;
+    if (v.monthlyDelta > 0) return `Vérifié : ${v.monthlyDelta.toLocaleString('fr-FR')}€ / mois réellement économisés`;
+    return `Suivi : pas encore d'économie mesurée sur cette catégorie`;
+  };
 
   const activeChallengesCount = challenges.filter(c => c.status === 'in_progress').length;
   const potentialSavingsTotal = challenges.reduce((acc, c) => acc + (c.status !== 'completed' ? c.potentialSaving : 0), 0);
   const currentSavingsPercent = Math.round((challenges.filter(c => c.status === 'completed').length / (challenges.length || 1)) * 100);
 
+  // Filter pills derive from the categories actually present in the user's
+  // challenges (the LLM writes free-form names for now), not a hardcoded list.
+  const filters = useMemo(() => {
+    const cats = [...new Set(challenges.map(challengeCategoryLabel).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+    const base = ['Tous'];
+    if (challenges.some(c => c.isAiGenerated)) base.push('IA');
+    return [...base, ...cats];
+  }, [challenges]);
+
   const filteredChallenges = challenges.filter(c => {
     if (filter === 'Tous') return true;
     if (filter === 'IA') return c.isAiGenerated;
-    return c.category === filter;
+    return challengeCategoryLabel(c) === filter;
   });
 
   return (
@@ -26,7 +93,7 @@ export default function Challenges({ store }: ChallengesProps) {
       {/* Jackpot Banner */}
       <section className="mt-4">
         <div className="bg-gradient-to-br from-primary-container to-primary text-white p-6 rounded-2xl shadow-xl relative overflow-hidden transition-transform active:scale-[0.99]">
-          <div className="flex items-center justify-between relative z-10 mb-6">
+          <div className="flex items-center justify-between relative z-10 mb-2">
             <div>
               <p className="text-[10px] uppercase font-bold tracking-widest opacity-80 mb-1">Cagnotte à débloquer</p>
               <h2 className="font-display text-3xl font-extrabold tracking-tight text-white">{potentialSavingsTotal.toLocaleString('fr-FR')} € <span className="text-lg font-normal opacity-70">/mois</span></h2>
@@ -42,8 +109,8 @@ export default function Challenges({ store }: ChallengesProps) {
                 <span className="text-[9px] font-bold uppercase tracking-tight opacity-90">{activeChallengesCount} économies actives</span>
               </div>
             </div>
-            <button 
-              onClick={executeAiAnalysis}
+            <button
+              onClick={() => { analysisTriggeredHere.current = true; executeAiAnalysis(true); }}
               disabled={isAiAnalyzing}
               className={`bg-white/20 backdrop-blur-md p-4 rounded-2xl border border-white/20 transition-all active:scale-95 group
                 ${isAiAnalyzing ? 'opacity-50' : 'hover:bg-white/30'}`}
@@ -54,6 +121,24 @@ export default function Challenges({ store }: ChallengesProps) {
                 <Sparkles size={32} className="text-white fill-white/20 group-hover:scale-110 transition-transform" />
               )}
             </button>
+          </div>
+          {/* Fixed-height status line: the completion message fades in and out
+              here without shifting the card or the content below it. */}
+          <div className="h-4 relative z-10 flex items-center">
+            <AnimatePresence>
+              {showAnalysisMsg && lastAnalysis && (
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="text-[9px] uppercase font-bold tracking-widest text-white/80"
+                >
+                  {lastAnalysis.newCount > 0
+                    ? `Analyse terminée · ${lastAnalysis.newCount} nouvelle${lastAnalysis.newCount > 1 ? 's' : ''} économie${lastAnalysis.newCount > 1 ? 's' : ''}`
+                    : 'Analyse terminée · aucune nouvelle recommandation'}
+                </motion.p>
+              )}
+            </AnimatePresence>
           </div>
           {/* Decorative element */}
           <div className="absolute -right-6 -top-6 w-24 h-24 bg-white/10 rounded-full blur-2xl" />
@@ -70,7 +155,7 @@ export default function Challenges({ store }: ChallengesProps) {
 
       {/* Filter Pills */}
       <nav className="flex gap-2 overflow-x-auto no-scrollbar pb-1 -mx-5 px-5">
-        {(['Tous', 'IA', 'Courses', 'Abonnements', 'Énergie'] as const).map((f) => (
+        {filters.map((f) => (
           <button 
             key={f} 
             onClick={() => setFilter(f)}
@@ -95,9 +180,7 @@ export default function Challenges({ store }: ChallengesProps) {
                 <div className="flex items-center gap-4">
                   <div className="relative">
                     <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${challenge.status === 'completed' ? 'bg-tertiary/10 text-tertiary' : 'bg-primary/5 text-primary'}`}>
-                      {challenge.category === 'Courses' && <ShoppingCart size={24} />}
-                      {challenge.category === 'Abonnements' && <Tv size={24} />}
-                      {challenge.category === 'Énergie' && <Zap size={24} />}
+                      {categoryIcon(challengeCategoryLabel(challenge))}
                     </div>
                     <div className={`absolute -bottom-1 -right-1 text-[9px] px-1.5 py-0.5 rounded-full border-2 border-white font-bold
                       ${challenge.status === 'completed' ? 'bg-tertiary text-white' : 'bg-surface-container text-secondary'}`}>
@@ -167,10 +250,9 @@ export default function Challenges({ store }: ChallengesProps) {
               <div className="flex items-center gap-2">
                 {challenge.status === 'completed' ? <Trophy size={14} /> : <Sparkles size={14} />}
                 <span className="text-[10px] font-extrabold uppercase tracking-widest">
-                  {challenge.status === 'completed' ? `Gain : ${challenge.potentialSaving * 12}€ / an` : 
-                   challenge.id === '1' ? 'Récompense : 144€ / an' : 
-                   challenge.id === '2' ? 'Qualité HD Préservée' : 
-                   'Prédiction IA : Succès garanti'}
+                  {challenge.status === 'completed'
+                    ? completedFooter(challenge)
+                    : `Potentiel : ${challenge.potentialSaving * 12}€ / an`}
                 </span>
               </div>
               {challenge.status !== 'completed' && <ChevronRight size={14} className="opacity-40" />}

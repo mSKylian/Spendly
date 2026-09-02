@@ -47,9 +47,17 @@ service cloud.firestore {
         && (!data.keys().hasAll(['avatar']) || (data.avatar is string && data.avatar.size() <= 500));
     }
 
-    function isValidTransaction(data) {
+    function isCategorySlug(id) {
+      return id is string && id.size() >= 2 && id.size() <= 30 && id.matches('^[a-z0-9_]+$');
+    }
+
+    function isPro(userId) {
+      return get(/databases/$(database)/documents/users/$(userId)).data.tier == 'pro';
+    }
+
+    function isValidTransaction(data, userId) {
       return data.keys().hasAll(['name', 'date', 'amount', 'category', 'iconName'])
-        && (data.keys().size() >= 5 && data.keys().size() <= 8)
+        && (data.keys().size() >= 5 && data.keys().size() <= 10)
         && data.name is string && data.name.size() <= 100
         && data.date is string && data.date.size() <= 50
         && data.amount is number && data.amount >= -100000 && data.amount <= 100000
@@ -57,7 +65,12 @@ service cloud.firestore {
         && data.iconName is string && data.iconName.size() <= 50
         && (!data.keys().hasAll(['accountId']) || (data.accountId is string && data.accountId.size() <= 128))
         && (!data.keys().hasAll(['status']) || data.status in ['completed', 'pending', 'failed'])
-        && (!data.keys().hasAll(['rawLabel']) || (data.rawLabel is string && data.rawLabel.size() <= 200));
+        && (!data.keys().hasAll(['rawLabel']) || (data.rawLabel is string && data.rawLabel.size() <= 200))
+        && (!data.keys().hasAll(['categoryId']) || isCategorySlug(data.categoryId))
+        // Manual recategorization ('user' provenance) is a pro feature.
+        && (!data.keys().hasAll(['categorySource'])
+            || (data.categorySource in ['rule', 'llm', 'default']
+                || (data.categorySource == 'user' && isPro(userId))));
     }
 
     function isValidCategory(data) {
@@ -72,7 +85,9 @@ service cloud.firestore {
 
     function isValidChallenge(data) {
       return data.keys().hasAll(['title', 'subtitle', 'description', 'potentialSaving', 'status', 'category', 'level'])
-        && (data.keys().size() >= 7 && data.keys().size() <= 9)
+        && (data.keys().size() >= 7 && data.keys().size() <= 13)
+        && (!data.keys().hasAll(['categoryId']) || isCategorySlug(data.categoryId))
+        && (!data.keys().hasAll(['completedAt']) || (data.completedAt is string && data.completedAt.size() <= 50))
         && data.title is string && data.title.size() <= 100
         && data.subtitle is string && data.subtitle.size() <= 100
         && data.description is string && data.description.size() <= 500
@@ -112,15 +127,30 @@ service cloud.firestore {
 
       match /transactions/{transactionId} {
         allow list, get: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidTransaction(incoming()) && isValidId(transactionId);
-        allow update: if isOwner(userId) && isValidTransaction(incoming());
+        allow create: if isOwner(userId) && isValidTransaction(incoming(), userId) && isValidId(transactionId);
+        allow update: if isOwner(userId) && isValidTransaction(incoming(), userId);
         allow delete: if isOwner(userId);
+      }
+
+      // Learned categorization rules ("always classify X as Y") — pro only.
+      match /merchantRules/{ruleId} {
+        allow list, get: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isPro(userId) && isValidId(ruleId)
+          && incoming().keys().hasAll(['normalizedLabel', 'categoryId', 'createdAt'])
+          && incoming().keys().size() == 3
+          && incoming().normalizedLabel is string && incoming().normalizedLabel.size() >= 1 && incoming().normalizedLabel.size() <= 80
+          && isCategorySlug(incoming().categoryId)
+          && incoming().createdAt is string && incoming().createdAt.size() <= 50;
+        allow delete: if isOwner(userId) && isPro(userId);
       }
 
       match /categories/{categoryId} {
         allow list, get: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidCategory(incoming()) && isValidId(categoryId);
+        // custom_* docs are user-created categories — a pro feature.
+        allow create: if isOwner(userId) && isValidCategory(incoming()) && isValidId(categoryId)
+          && (!categoryId.matches('^custom_.*') || isPro(userId));
         allow update: if isOwner(userId) && isValidCategory(incoming());
+        allow delete: if isOwner(userId) && categoryId.matches('^custom_.*') && isPro(userId);
       }
 
       match /challenges/{challengeId} {
