@@ -615,7 +615,7 @@ async function startServer() {
 
   app.post("/api/analyze", authenticate, llmLimiter, async (req, res) => {
     const user = (req as any).user;
-    let { transactions } = req.body;
+    let { transactions, force } = req.body;
     // Compute hash server-side from the actual submitted data
     const hashStr = JSON.stringify((transactions || []).map((t: any) => `${t.name}:${t.amount}`));
     let hashVal = 0;
@@ -638,13 +638,16 @@ async function startServer() {
       // bounds digest computation — maxTransactions no longer limits it.
       transactions = (transactions || []).slice(0, 600);
       
-      // 1. Check cache cache
-      const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
-      if (cacheDoc.exists) {
-         const data = cacheDoc.data()!;
-         if (data.hash === transactionsHash && data.promptVersion === (config?.updatedAt || 'v1')) {
-            return res.json({ insight: data.insight, newChallenges: data.newChallenges });
-         }
+      // 1. Check cache cache (skipped on an explicit forced re-analysis, e.g. a
+      // user clicking "analyser" — they expect a fresh run even if nothing changed)
+      if (!force) {
+        const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
+        if (cacheDoc.exists) {
+           const data = cacheDoc.data()!;
+           if (data.hash === transactionsHash && data.promptVersion === (config?.updatedAt || 'v1')) {
+              return res.json({ insight: data.insight, newChallenges: data.newChallenges });
+           }
+        }
       }
 
       const validated = validateBaseUrl(config?.url);
@@ -735,10 +738,19 @@ async function startServer() {
         }
 
         try {
-           // Models without JSON mode may wrap the payload in ```json fences.
+           // Models without JSON mode may wrap the payload in ```json fences or
+           // append commentary after the object — extract the outermost JSON.
            const raw = (response.choices[0].message.content || '{}')
              .replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
-           const parsed = JSON.parse(raw);
+           let parsed;
+           try {
+             parsed = JSON.parse(raw);
+           } catch {
+             const start = raw.indexOf('{');
+             const end = raw.lastIndexOf('}');
+             if (start === -1 || end <= start) throw new Error('No JSON object in LLM response');
+             parsed = JSON.parse(raw.slice(start, end + 1));
+           }
            insight = parsed.insight || "Nouvelle analyse";
            newChallenges = (parsed.newChallenges || parsed.recommendations || []).map((ch: any) => {
              const categoryId = toSlug(ch?.category);

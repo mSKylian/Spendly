@@ -5,7 +5,8 @@ export async function analyzeSpending(
   transactions: Transaction[],
   categories: CategoryBudget[],
   currentChallenges: Challenge[],
-  accounts: Account[]
+  accounts: Account[],
+  force = false
 ) {
   try {
     const token = await auth.currentUser?.getIdToken();
@@ -31,7 +32,8 @@ export async function analyzeSpending(
         category: t.category,
         categoryId: t.categoryId,
         accountId: t.accountId
-      }))
+      })),
+      force
     };
 
     const res = await fetch('/api/analyze', {

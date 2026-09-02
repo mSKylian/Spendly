@@ -32,8 +32,19 @@ function categoryIcon(category: string, size = 24) {
 }
 
 export default function Challenges({ store }: ChallengesProps) {
-  const { user, challenges, transactions, activateChallenge, executeAiAnalysis, isAiAnalyzing } = store;
+  const { user, challenges, transactions, activateChallenge, executeAiAnalysis, isAiAnalyzing, lastAnalysis } = store;
   const [filter, setFilter] = useState<string>('Tous');
+  const [showAnalysisMsg, setShowAnalysisMsg] = useState(false);
+
+  // Surface a small transient message once an analysis completes — a forced
+  // click otherwise gives no visible feedback beyond the spinner stopping.
+  const lastAnalysisAt = lastAnalysis?.at;
+  React.useEffect(() => {
+    if (!lastAnalysisAt) return;
+    setShowAnalysisMsg(true);
+    const timeout = setTimeout(() => setShowAnalysisMsg(false), 4000);
+    return () => clearTimeout(timeout);
+  }, [lastAnalysisAt]);
 
   // Data-verified savings: compare the category's real monthly spend before vs
   // after completion (lib/finance.verifyChallengeSaving). Null = pending.
@@ -94,8 +105,8 @@ export default function Challenges({ store }: ChallengesProps) {
                 <span className="text-[9px] font-bold uppercase tracking-tight opacity-90">{activeChallengesCount} économies actives</span>
               </div>
             </div>
-            <button 
-              onClick={executeAiAnalysis}
+            <button
+              onClick={() => executeAiAnalysis(true)}
               disabled={isAiAnalyzing}
               className={`bg-white/20 backdrop-blur-md p-4 rounded-2xl border border-white/20 transition-all active:scale-95 group
                 ${isAiAnalyzing ? 'opacity-50' : 'hover:bg-white/30'}`}
@@ -118,6 +129,18 @@ export default function Challenges({ store }: ChallengesProps) {
             />
           )}
         </div>
+        {showAnalysisMsg && lastAnalysis && (
+          <motion.p
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="text-[10px] uppercase font-bold tracking-widest text-secondary mt-2 text-center"
+          >
+            {lastAnalysis.newCount > 0
+              ? `Analyse terminée · ${lastAnalysis.newCount} nouvelle${lastAnalysis.newCount > 1 ? 's' : ''} économie${lastAnalysis.newCount > 1 ? 's' : ''}`
+              : 'Analyse terminée · aucune nouvelle recommandation'}
+          </motion.p>
+        )}
       </section>
 
       {/* Filter Pills */}

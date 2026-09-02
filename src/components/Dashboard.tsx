@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera, Home, HeartPulse, Plane, Wallet } from 'lucide-react';
+import { Utensils, Zap, Car, Play, Coffee, ShoppingCart, ShoppingBag, Music, Cloud, Package, Tv, TrendingUp, Sparkles, Plus, X, Landmark, Calendar, Camera, Home, HeartPulse, Plane, Wallet, Lock } from 'lucide-react';
 import { SpendlyStore } from '../store';
 import ReceiptScanner from './ReceiptScanner';
 import { totalSpent, spentByCategory, usedPercent as computeUsedPercent, formatTxDate, toISODate, monthReference, monthlySeries, transactionsForCategory, hexFromColorClass, effectiveSlug } from '../lib/finance';
-import { rollupSlug, displayMeta, slugFromLegacy, isCustomSlug } from '../lib/taxonomy';
+import { rollupSlug, displayMeta, slugFromLegacy, isCustomSlug, SYSTEM_CATEGORIES } from '../lib/taxonomy';
 import type { Transaction } from '../types';
 
 interface DashboardProps {
@@ -12,7 +12,11 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ store }: DashboardProps) {
-  const { balance, categories, transactions, user, accounts, addTransaction, scanReceipt } = store;
+  const { balance, categories, transactions, user, accounts, addTransaction, scanReceipt, recategorizeTransaction } = store;
+  const tier = user?.tier ?? 'free';
+  // User-created categories (pro): docs whose id is a custom_* slug, offered
+  // alongside the system taxonomy in the recategorize control.
+  const customCats = useMemo(() => categories.filter(c => c.id && isCustomSlug(c.id)), [categories]);
   const [showAdd, setShowAdd] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [newTrans, setNewTrans] = useState({ name: '', amount: '', category: 'Nourriture', accountId: accounts[0]?.id || '' });
@@ -62,7 +66,6 @@ export default function Dashboard({ store }: DashboardProps) {
   const monthRef = useMemo(() => monthReference(transactions), [transactions]);
   // Categories are keyed by taxonomy slug, rolled up to 4 groups + Autre on
   // the free tier; pro sees the full taxonomy (docs/CATEGORY_ENGINE.md).
-  const tier = user?.tier ?? 'free';
   const keyOf = useMemo(() => (t: Transaction) => rollupSlug(effectiveSlug(t), tier), [tier]);
   const monthByCategory = useMemo(() => spentByCategory(transactions, 'month', monthRef, keyOf), [transactions, monthRef, keyOf]);
   const monthSpent = useMemo(() => totalSpent(transactions, 'month', monthRef), [transactions, monthRef]);
@@ -98,6 +101,26 @@ export default function Dashboard({ store }: DashboardProps) {
         };
       });
   }, [monthByCategory, categories, series, tier]);
+
+  const [showAllTx, setShowAllTx] = useState(false);
+  // "Toutes les transactions" sheet: full history, newest first, grouped by month.
+  const allTxSorted = useMemo(
+    () => [...transactions].sort((a, b) => b.date.localeCompare(a.date)),
+    [transactions]
+  );
+  const allTxGroups = useMemo(() => {
+    const groups: { label: string; items: Transaction[] }[] = [];
+    for (const t of allTxSorted) {
+      const label = new Date(t.date).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+      const last = groups[groups.length - 1];
+      if (last && last.label === label) {
+        last.items.push(t);
+      } else {
+        groups.push({ label, items: [t] });
+      }
+    }
+    return groups;
+  }, [allTxSorted]);
 
   const [drillDown, setDrillDown] = useState<string | null>(null);
   const drillDownCat = topCategories.find(c => c.key === drillDown);
@@ -307,7 +330,7 @@ export default function Dashboard({ store }: DashboardProps) {
           </p>
         </div>
         <button 
-          onClick={store.executeAiAnalysis}
+          onClick={() => store.executeAiAnalysis()}
           disabled={store.isAiAnalyzing}
           className="w-10 h-10 hover:bg-surface-container rounded-full flex items-center justify-center transition-all active:scale-95 disabled:opacity-30"
         >
@@ -391,14 +414,37 @@ export default function Dashboard({ store }: DashboardProps) {
               </p>
               <div className="space-y-1">
                 {drillDownTxs.map((t) => (
-                  <div key={t.id} className="flex items-center justify-between py-2.5 border-b border-surface-container last:border-none">
-                    <div>
-                      <p className="font-bold text-sm">{t.name}</p>
+                  <div key={t.id} className="flex items-center justify-between gap-2 py-2.5 border-b border-surface-container last:border-none">
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm truncate">{t.name}</p>
                       <p className="text-[10px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
                     </div>
-                    <span className="font-display font-extrabold text-sm text-red-600 tabular-nums">
-                      {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {tier === 'pro' ? (
+                        // Recategorize + learn a merchant rule (pro only,
+                        // enforced server-side by Firestore rules).
+                        <select
+                          value={effectiveSlug(t)}
+                          onChange={(e) => recategorizeTransaction(t.id, e.target.value)}
+                          className="text-[9px] font-bold uppercase bg-surface-container rounded-lg px-1.5 py-1 outline-none max-w-[110px]"
+                          title="Recatégoriser"
+                        >
+                          {SYSTEM_CATEGORIES.filter((c) => !c.isIncome).map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                          {customCats.map((c) => (
+                            <option key={c.id} value={c.id!}>{c.name}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="flex items-center gap-1 text-[8px] font-bold uppercase text-secondary/60" title="Recatégorisation réservée aux membres Pro">
+                          <Lock size={9} /> Pro
+                        </span>
+                      )}
+                      <span className="font-display font-extrabold text-sm text-red-600 tabular-nums">
+                        {t.amount.toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -411,7 +457,12 @@ export default function Dashboard({ store }: DashboardProps) {
       <section>
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-display font-extrabold text-lg">Transactions récentes</h3>
-          <button className="text-primary text-xs font-bold uppercase tracking-wider">Tout voir</button>
+          <button
+            onClick={() => setShowAllTx(true)}
+            className="text-primary text-xs font-bold uppercase tracking-wider hover:opacity-70 active:scale-95 transition-all"
+          >
+            Tout voir
+          </button>
         </div>
         <div className="bg-surface-container-lowest rounded-2xl shadow-[0px_4px_20px_rgba(0,0,0,0.04)] divide-y divide-surface-container">
           {transactions.map((t) => (
@@ -432,6 +483,68 @@ export default function Dashboard({ store }: DashboardProps) {
           ))}
         </div>
       </section>
+
+      {/* All Transactions Sheet */}
+      <AnimatePresence>
+        {showAllTx && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/40 z-50 flex items-end justify-center"
+            onClick={() => setShowAllTx(false)}
+          >
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="bg-surface-container-lowest w-full max-w-lg rounded-t-3xl p-6 max-h-[75vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-display font-extrabold text-lg leading-tight">Toutes les transactions</h3>
+                  <p className="text-[10px] uppercase font-bold text-secondary tracking-wider">
+                    {allTxSorted.length} transaction{allTxSorted.length > 1 ? 's' : ''}
+                  </p>
+                </div>
+                <button onClick={() => setShowAllTx(false)} className="p-2 rounded-full hover:bg-surface-container">
+                  <X size={18} />
+                </button>
+              </div>
+              {allTxGroups.length === 0 && (
+                <p className="text-sm font-medium text-secondary text-center py-6">Aucune transaction.</p>
+              )}
+              <div className="space-y-4">
+                {allTxGroups.map((group) => (
+                  <div key={group.label}>
+                    <p className="text-[10px] uppercase font-bold text-secondary tracking-wider mb-1">{group.label}</p>
+                    <div className="space-y-1">
+                      {group.items.map((t) => (
+                        <div key={t.id} className="flex items-center justify-between gap-2 py-2.5 border-b border-surface-container last:border-none">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-9 h-9 shrink-0 rounded-full bg-surface-container flex items-center justify-center">
+                              {getIcon(t.iconName)}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-bold text-sm truncate">{t.name}</p>
+                              <p className="text-[10px] font-bold text-secondary uppercase">{formatTxDate(t.date)}</p>
+                            </div>
+                          </div>
+                          <p className={`font-display font-extrabold text-sm shrink-0 tabular-nums ${t.amount < 0 ? 'text-error' : 'text-primary'}`}>
+                            {t.amount < 0 ? '-' : '+'} {Math.abs(t.amount).toLocaleString('fr-FR', { minimumFractionDigits: 2 })} €
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
