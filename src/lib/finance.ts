@@ -1,7 +1,21 @@
 import { Transaction } from '../types';
+import { CategorySlug, CategorySource, isValidSlug, isKnownSlug, slugFromLegacy, categoryById } from './taxonomy';
 
 // A single source of truth for money math so every page derives the same
 // numbers from the same data (transactions), instead of divergent stored fields.
+
+/**
+ * Authoritative category slug of a transaction: `categoryId` when present and
+ * valid, otherwise mapped from the legacy free-string `category`.
+ */
+export function effectiveSlug(t: Pick<Transaction, 'category' | 'categoryId'>): string {
+  return t.categoryId && isKnownSlug(t.categoryId) ? t.categoryId : slugFromLegacy(t.category);
+}
+
+/** Default grouping key for selectors: the effective taxonomy slug. */
+export function slugKey(t: Transaction): string {
+  return effectiveSlug(t);
+}
 
 export type Period = 'week' | 'month' | 'year';
 
@@ -78,20 +92,144 @@ export function totalSpent(
   );
 }
 
-/** Spend per category (keyed by lower-cased category name) within the period. */
+/**
+ * Spend per category within the period, keyed by `keyOf` (default: the
+ * transaction's effective taxonomy slug — pass a tier-rollup key to group for
+ * the free tier).
+ */
 export function spentByCategory(
   transactions: Transaction[],
   period: Period,
-  now: Date = new Date()
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
 ): Record<string, number> {
   const out: Record<string, number> = {};
   for (const t of transactionsInPeriod(transactions, period, now)) {
     const spent = expenseAmount(t);
     if (spent === 0) continue;
-    const key = t.category.toLowerCase();
+    const key = keyOf(t);
     out[key] = (out[key] || 0) + spent;
   }
   return out;
+}
+
+/**
+ * Reference date for the monthly dashboard: now — or, when the current month
+ * has no transactions at all, the month holding the most expense transactions
+ * (latest wins a tie). A freshly imported statement then shows its dominant
+ * month, not a spillover month with a stray transaction or two. Callers should
+ * label the shown month when it isn't the current one.
+ */
+export function monthReference(transactions: Transaction[], now: Date = new Date()): Date {
+  if (transactionsInPeriod(transactions, 'month', now).length > 0) return now;
+  const counts = new Map<string, { count: number; ref: Date }>();
+  for (const t of transactions) {
+    const d = parseTxDate(t.date);
+    if (!d || expenseAmount(t) === 0) continue;
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const entry = counts.get(key);
+    if (entry) entry.count++;
+    else counts.set(key, { count: 1, ref: d });
+  }
+  let best: { count: number; ref: Date } | null = null;
+  for (const entry of counts.values()) {
+    if (!best || entry.count > best.count || (entry.count === best.count && entry.ref > best.ref)) {
+      best = entry;
+    }
+  }
+  return best?.ref ?? now;
+}
+
+/** One bucket of derived series data (a week, month, or year). */
+export interface MonthPoint {
+  key: string;        // bucket start as ISO date
+  label: string;      // short fr-FR label ('17 nov.', 'nov.', '2026')
+  start: Date;
+  spend: number;      // total expenses (positive magnitude)
+  income: number;     // total credits
+  byCategory: Record<string, number>; // expenses per category key
+}
+
+function stepBack(period: Period, start: Date, steps: number): Date {
+  const d = new Date(start);
+  if (period === 'week') d.setDate(d.getDate() - steps * 7);
+  else if (period === 'month') d.setMonth(d.getMonth() - steps);
+  else d.setFullYear(d.getFullYear() - steps);
+  return d;
+}
+
+function bucketLabel(period: Period, start: Date): string {
+  if (period === 'week') return start.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+  if (period === 'month') return start.toLocaleDateString('fr-FR', { month: 'short' });
+  return String(start.getFullYear());
+}
+
+/**
+ * Per-period spend/income series for the `count` calendar buckets (weeks,
+ * months, or years) ending at the bucket of `now` (inclusive), oldest first.
+ * Derived purely from transactions.
+ */
+export function periodSeries(
+  transactions: Transaction[],
+  period: Period,
+  count: number,
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
+): MonthPoint[] {
+  const points: MonthPoint[] = [];
+  const byKey = new Map<string, MonthPoint>();
+  const anchorStart = periodStart(period, now);
+  for (let i = count - 1; i >= 0; i--) {
+    const start = stepBack(period, anchorStart, i);
+    const point: MonthPoint = {
+      key: start.toISOString().slice(0, 10),
+      label: bucketLabel(period, start),
+      start,
+      spend: 0,
+      income: 0,
+      byCategory: {},
+    };
+    points.push(point);
+    byKey.set(point.key, point);
+  }
+  for (const t of transactions) {
+    const d = parseTxDate(t.date);
+    if (!d) continue;
+    const point = byKey.get(periodStart(period, d).toISOString().slice(0, 10));
+    if (!point) continue;
+    if (t.amount > 0) {
+      point.income += t.amount;
+    } else {
+      const spent = expenseAmount(t);
+      point.spend += spent;
+      const key = keyOf(t);
+      point.byCategory[key] = (point.byCategory[key] || 0) + spent;
+    }
+  }
+  return points;
+}
+
+/** Per-month series — see periodSeries. */
+export function monthlySeries(
+  transactions: Transaction[],
+  months: number,
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
+): MonthPoint[] {
+  return periodSeries(transactions, 'month', months, now, keyOf);
+}
+
+/** Expense transactions of one category key within the period. */
+export function transactionsForCategory(
+  transactions: Transaction[],
+  categoryKey: string,
+  period: Period,
+  now: Date = new Date(),
+  keyOf: (t: Transaction) => string = slugKey
+): Transaction[] {
+  return transactionsInPeriod(transactions, period, now)
+    .filter((t) => t.amount < 0 && keyOf(t) === categoryKey)
+    .sort((a, b) => b.date.localeCompare(a.date));
 }
 
 /** Round a percentage to an integer, clamped to [0, 100]; safe for zero limits. */
@@ -100,19 +238,84 @@ export function usedPercent(spent: number, limit: number): number {
   return Math.min(100, Math.max(0, Math.round((spent / limit) * 100)));
 }
 
-/** Map a Tailwind background class to a hex color for chart marks. */
+/**
+ * Map a Tailwind background class to a hex color for chart marks.
+ * Hexes are chart-tuned (validated for CVD separation and lightness on the
+ * app surface), so they differ slightly from the raw Tailwind values.
+ */
 export function hexFromColorClass(colorClass: string): string {
   const map: Record<string, string> = {
-    'bg-orange-500': '#f97316',
+    'bg-orange-500': '#ea700d',
     'bg-purple-500': '#a855f7',
     'bg-blue-500': '#3b82f6',
-    'bg-teal-500': '#14b8a6',
-    'bg-green-500': '#22c55e',
-    'bg-red-500': '#ef4444',
-    'bg-yellow-500': '#eab308',
+    'bg-teal-500': '#0d9488',
+    'bg-green-500': '#16a34a',
+    'bg-red-500': '#dc2626',
+    'bg-yellow-500': '#ca8a04',
     'bg-pink-500': '#ec4899',
   };
   return map[colorClass] || '#57605f';
+}
+
+/** Chart colors for the income-vs-spend comparison (validated pair). */
+export const INCOME_COLOR = '#0f9d6b';
+export const SPEND_COLOR = '#c2410c';
+
+export interface SavingVerification {
+  monthlyDelta: number;   // >0 = actual monthly saving vs before, <0 = spend went up
+  beforeAvg: number;      // avg monthly category spend before completion
+  afterAvg: number;       // avg monthly category spend after completion
+  monthsAfter: number;    // full months measured after completion
+}
+
+/**
+ * Data-verified challenge saving: compare a category's average monthly spend
+ * in the (up to 3) full months before the challenge was completed with the
+ * full months after. Returns null while there is no complete month after
+ * completion to measure — "verification pending".
+ */
+export function verifyChallengeSaving(
+  transactions: Transaction[],
+  categoryId: string,
+  completedAt: string,
+  now: Date = new Date()
+): SavingVerification | null {
+  const completed = parseTxDate(completedAt);
+  if (!completed) return null;
+
+  // Full calendar months strictly after the completion month, up to now.
+  const firstAfter = periodStart('month', completed);
+  firstAfter.setMonth(firstAfter.getMonth() + 1);
+  const currentMonthStart = periodStart('month', now);
+  const monthsAfter: Date[] = [];
+  for (const d = new Date(firstAfter); d < currentMonthStart && monthsAfter.length < 6; d.setMonth(d.getMonth() + 1)) {
+    monthsAfter.push(new Date(d));
+  }
+  if (monthsAfter.length === 0) return null;
+
+  const monthsBefore: Date[] = [];
+  for (let i = 1; i <= 3; i++) {
+    const d = periodStart('month', completed);
+    d.setMonth(d.getMonth() - i);
+    monthsBefore.push(d);
+  }
+
+  const spendIn = (monthStart: Date) =>
+    spentByCategory(transactions, 'month', monthStart)[categoryId] || 0;
+
+  // Only count "before" months that actually have data for a fair baseline.
+  const beforeValues = monthsBefore.map(spendIn).filter((v) => v > 0);
+  if (beforeValues.length === 0) return null;
+
+  const beforeAvg = beforeValues.reduce((s, v) => s + v, 0) / beforeValues.length;
+  const afterAvg = monthsAfter.map(spendIn).reduce((s, v) => s + v, 0) / monthsAfter.length;
+
+  return {
+    monthlyDelta: Math.round((beforeAvg - afterAvg) * 100) / 100,
+    beforeAvg: Math.round(beforeAvg * 100) / 100,
+    afterAvg: Math.round(afterAvg * 100) / 100,
+    monthsAfter: monthsAfter.length,
+  };
 }
 
 /** Format a stored transaction date for display in fr-FR (falls back to raw). */
@@ -139,4 +342,71 @@ export function guessCategory(label: string): string {
     if (words.some((w) => l.includes(w))) return category;
   }
   return 'Autre';
+}
+
+// Keyword → taxonomy slug rules (pipeline step 3). More specific slugs than
+// the legacy CATEGORY_KEYWORDS table; first match wins, order matters.
+const SLUG_KEYWORDS: Array<{ slug: CategorySlug; words: string[] }> = [
+  { slug: 'logement', words: ['loyer', 'immobilier', 'syndic', 'foncia', 'nexity'] },
+  { slug: 'energie_telecom', words: ['edf', 'engie', 'totalenergies elec', 'free mobile', 'free telecom', 'orange', 'sfr', 'bouygues tel', 'sosh', 'red by'] },
+  { slug: 'abonnements', words: ['netflix', 'spotify', 'deezer', 'disney', 'canal', 'apple.com', 'icloud', 'prime', 'amazon music', 'youtube', 'assurance', 'basic fit', 'abonnement'] },
+  { slug: 'courses', words: ['carrefour', 'lidl', 'cora', 'auchan', 'monoprix', 'franprix', 'leclerc', 'intermarche', 'casino', 'boulangerie', 'boucherie', 'primeur', 'picard', 'grand frais'] },
+  { slug: 'restaurants', words: ['restaurant', 'bistrot', 'mcdo', 'mcdonald', 'burger', 'uber eats', 'deliveroo', 'brasserie', 'pizzeria', 'sushi', 'kebab', 'cafe', 'café'] },
+  { slug: 'transport', words: ['sncf', 'ratp', 'uber', 'bolt', 'total', 'essence', 'station', 'parking', 'velib', 'blablacar', 'navigo', 'peage', 'shell', 'esso', 'autoroute'] },
+  { slug: 'sante', words: ['pharmacie', 'docteur', 'medecin', 'médecin', 'mutuelle', 'dentiste', 'laboratoire', 'hopital', 'hôpital'] },
+  { slug: 'voyages', words: ['airbnb', 'booking', 'hotel', 'hôtel', 'air france', 'ryanair', 'easyjet', 'transavia'] },
+  { slug: 'shopping', words: ['zalando', 'vinted', 'zara', 'h&m', 'uniqlo', 'kiabi', 'primark'] },
+  { slug: 'loisirs', words: ['amazon', 'fnac', 'decathlon', 'cinema', 'cinéma', 'steam', 'playstation', 'nintendo', 'cultura', 'sport', 'concert'] },
+  { slug: 'epargne_virements', words: ['epargne', 'épargne', 'livret', 'vir interne', 'virement interne'] },
+];
+
+/** Keyword-classify a label into a taxonomy slug; 'autre' when unknown. */
+export function guessSlug(label: string): CategorySlug {
+  const l = (label || '').toLowerCase();
+  for (const { slug, words } of SLUG_KEYWORDS) {
+    if (words.some((w) => l.includes(w))) return slug;
+  }
+  return 'autre';
+}
+
+/**
+ * Categorize an imported transaction (docs/CATEGORY_ENGINE.md pipeline):
+ * merchant rule → LLM-provided slug → keyword rules → default. Returns the
+ * slug, its provenance, and the matching legacy display name.
+ */
+export function categorizeImport(
+  label: string,
+  amount: number,
+  llmCategory: string | undefined,
+  merchantRules: Map<string, string>,
+  normalizedLabel: string
+): { categoryId: CategorySlug; categorySource: CategorySource; category: string } {
+  let categoryId: CategorySlug | null = null;
+  let categorySource: CategorySource = 'default';
+
+  const ruled = merchantRules.get(normalizedLabel);
+  if (ruled && isValidSlug(ruled)) {
+    categoryId = ruled;
+    categorySource = 'rule';
+  } else if (amount >= 0) {
+    categoryId = 'revenus';
+  } else if (llmCategory && isValidSlug(llmCategory.toLowerCase())) {
+    categoryId = llmCategory.toLowerCase() as CategorySlug;
+    categorySource = 'llm';
+  } else {
+    const guessed = llmCategory ? slugFromLegacy(llmCategory) : guessSlug(label);
+    if (guessed !== 'autre') {
+      categoryId = guessed;
+      categorySource = llmCategory ? 'llm' : 'rule';
+    } else {
+      categoryId = guessSlug(label);
+      categorySource = categoryId === 'autre' ? 'default' : 'rule';
+    }
+  }
+
+  return {
+    categoryId,
+    categorySource,
+    category: categoryById(categoryId)?.name ?? 'Autre',
+  };
 }
