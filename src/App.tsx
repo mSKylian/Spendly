@@ -64,7 +64,7 @@ export default function App() {
       case 'stats':
         return (
           <motion.div key="stats" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <Stats />
+            <Stats store={store} />
           </motion.div>
         );
       case 'challenges':
