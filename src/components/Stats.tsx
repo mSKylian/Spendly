@@ -34,13 +34,17 @@ export default function Stats({ store }: StatsProps) {
     const limit = user?.limits?.[period] ?? 0;
     const byCat = spentByCategory(transactions, period);
 
-    const cats = categories
-      .map((c) => {
-        const amount = byCat[c.name.toLowerCase()] || 0;
+    // Build the breakdown from every category that actually has spend (keys of
+    // byCat), not just the seeded budget categories — so it always sums to the
+    // total. Category metadata (colour, proper-case name) is used when available.
+    const meta = new Map(categories.map((c) => [c.name.toLowerCase(), c]));
+    const cats = Object.entries(byCat)
+      .map(([key, amount]) => {
+        const c = meta.get(key);
         return {
-          name: c.name,
+          name: c ? c.name : key.charAt(0).toUpperCase() + key.slice(1),
           amount,
-          color: hexFromColorClass(c.colorClass),
+          color: c ? hexFromColorClass(c.colorClass) : hexFromColorClass('unknown'),
         };
       })
       .filter((c) => c.amount > 0)

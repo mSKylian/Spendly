@@ -20,6 +20,15 @@ export function periodStart(period: Period, now: Date = new Date()): Date {
   return d;
 }
 
+/** Exclusive end of the given period (start of the next period). */
+export function periodEnd(period: Period, now: Date = new Date()): Date {
+  const d = periodStart(period, now);
+  if (period === 'week') d.setDate(d.getDate() + 7);
+  else if (period === 'month') d.setMonth(d.getMonth() + 1);
+  else d.setFullYear(d.getFullYear() + 1);
+  return d;
+}
+
 /** Parse a transaction date string (accepts 'YYYY-MM-DD' or full ISO). */
 export function parseTxDate(dateStr: string): Date | null {
   const d = new Date(dateStr);
@@ -47,9 +56,13 @@ export function transactionsInPeriod(
   now: Date = new Date()
 ): Transaction[] {
   const start = periodStart(period, now).getTime();
+  const end = periodEnd(period, now).getTime();
   return transactions.filter((t) => {
     const d = parseTxDate(t.date);
-    return d !== null && d.getTime() >= start;
+    if (d === null) return false;
+    const ts = d.getTime();
+    // Bounded window [start, end): future-dated transactions do not leak in.
+    return ts >= start && ts < end;
   });
 }
 
@@ -107,4 +120,23 @@ export function formatTxDate(dateStr: string): string {
   const d = parseTxDate(dateStr);
   if (!d) return dateStr;
   return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// Best-effort keyword → category mapping so imported/uncategorized transactions
+// land in a real budget category instead of a catch-all. Matched against the
+// transaction label, case-insensitively. Falls back to 'Autre'.
+const CATEGORY_KEYWORDS: Array<{ category: string; words: string[] }> = [
+  { category: 'Nourriture', words: ['carrefour', 'lidl', 'cora', 'auchan', 'monoprix', 'franprix', 'leclerc', 'intermarche', 'casino', 'boulangerie', 'restaurant', 'bistrot', 'mcdo', "mcdonald", 'burger', 'uber eats', 'deliveroo', 'boucherie', 'primeur'] },
+  { category: 'Transport', words: ['sncf', 'ratp', 'uber', 'bolt', 'total', 'totalenergies', 'essence', 'station', 'parking', 'velib', 'blablacar', 'navigo', 'peage', 'shell', 'esso'] },
+  { category: 'Abos', words: ['netflix', 'spotify', 'deezer', 'disney', 'canal', 'free', 'orange', 'sfr', 'bouygues', 'edf', 'engie', 'apple.com', 'icloud', 'google', 'prime', 'amazon music', 'youtube', 'assurance'] },
+  { category: 'Loisirs', words: ['amazon', 'fnac', 'decathlon', 'cinema', 'steam', 'playstation', 'nintendo', 'cultura', 'zalando', 'vinted', 'sport'] },
+];
+
+/** Guess a budget category from a transaction label; 'Autre' when unknown. */
+export function guessCategory(label: string): string {
+  const l = (label || '').toLowerCase();
+  for (const { category, words } of CATEGORY_KEYWORDS) {
+    if (words.some((w) => l.includes(w))) return category;
+  }
+  return 'Autre';
 }
