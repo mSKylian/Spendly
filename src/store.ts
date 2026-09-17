@@ -33,6 +33,7 @@ import { categoryById, isCustomSlug, isKnownSlug, normalizeLabel, merchantRuleId
 export type SpendlyStore = {
   balance: number; // derived: sum of account balances (== totalAssets)
   user: UserProfile | null;
+  isAdmin: boolean;
   accounts: Account[];
   categories: CategoryBudget[];
   transactions: Transaction[];
@@ -44,6 +45,7 @@ export type SpendlyStore = {
   activateChallenge: (id: string) => Promise<void>;
   addTransaction: (t: Omit<Transaction, 'id'>) => Promise<void>;
   addAccount: (a: Omit<Account, 'id'>) => Promise<string | void>;
+  updateAccount: (id: string, account: Partial<Account>) => Promise<void>;
   deleteAccount: (id: string) => Promise<void>;
   importStatement: (parsed: ParsedStatement, targetAccountId?: string) => Promise<string | void>;
   updateUser: (user: Partial<UserProfile>) => Promise<void>;
@@ -104,6 +106,7 @@ const DEFAULT_CHALLENGES: Omit<Challenge, 'id'>[] = [
 
 export function useSpendlyStore(): SpendlyStore {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<CategoryBudget[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -141,6 +144,19 @@ export function useSpendlyStore(): SpendlyStore {
       if (snap.exists()) {
         const data = snap.data() as UserProfile;
         setUser(data);
+        
+        try {
+          const token = await fbUser.getIdToken();
+          const res = await fetch('/api/admin/check', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            setIsAdmin(data.isAdmin || false);
+          }
+        } catch (e) {
+          console.error("Failed to check admin status", e);
+        }
       } else {
         // Initialize new user
         const newProfile: UserProfile = {
@@ -510,6 +526,16 @@ export function useSpendlyStore(): SpendlyStore {
     }
   };
 
+  const updateAccount = async (id: string, updates: Partial<Account>) => {
+    if (!fbUser) return;
+    try {
+      await updateDoc(doc(db, 'users', fbUser.uid, 'accounts', id), updates);
+    } catch (e) {
+      console.error('Failed to update account', e);
+      throw e;
+    }
+  };
+
   const deleteAccount = async (id: string) => {
     if (!fbUser) return;
     const accountPath = `users/${fbUser.uid}/accounts/${id}`;
@@ -704,6 +730,7 @@ export function useSpendlyStore(): SpendlyStore {
   return {
     balance,
     user,
+    isAdmin,
     accounts,
     categories,
     transactions,
@@ -715,6 +742,7 @@ export function useSpendlyStore(): SpendlyStore {
     activateChallenge,
     addTransaction,
     addAccount,
+    updateAccount,
     deleteAccount,
     importStatement,
     updateUser,

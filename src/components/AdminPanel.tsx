@@ -23,6 +23,26 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
+
+  const handleCreateInvite = async () => {
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/invite', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const link = `${window.location.origin}?invite=${data.token}`;
+        setInviteToken(link);
+      } else {
+        setMessage({ type: 'error', text: 'Erreur lors de la création du lien.' });
+      }
+    } catch (e) {
+      setMessage({ type: 'error', text: 'Erreur réseau.' });
+    }
+  };
 
   useEffect(() => {
     fetchConfig();
@@ -339,6 +359,31 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
           >
             Vider Cache IA
           </motion.button>
+        </div>
+
+        <div className="mt-8 pt-8 border-t border-surface-container-low">
+          <h4 className="text-xs uppercase font-extrabold text-secondary mb-4 tracking-widest">Inviter un administrateur</h4>
+          <p className="text-xs text-secondary mb-4">Crée un lien d'invitation unique pour donner les droits d'administration à un nouvel utilisateur.</p>
+          <motion.button
+            whileTap={{ scale: 0.98 }}
+            onClick={handleCreateInvite}
+            className="w-full py-4 bg-primary text-white rounded-xl font-bold text-sm uppercase tracking-widest hover:bg-primary/90 transition-all shadow-[0px_8px_16px_rgba(20,93,255,0.2)] mb-4"
+          >
+            Générer un lien
+          </motion.button>
+          
+          {inviteToken && (
+            <div className="p-4 bg-primary/10 rounded-xl mb-4 border border-primary/20">
+              <p className="text-[10px] font-extrabold text-primary mb-2 uppercase tracking-widest">Lien d'invitation (valide 1 fois) :</p>
+              <input 
+                type="text" 
+                readOnly 
+                value={inviteToken} 
+                onClick={(e) => (e.target as HTMLInputElement).select()}
+                className="w-full text-xs p-3 rounded-lg bg-white border border-primary/20 text-secondary focus:outline-none focus:ring-2 focus:ring-primary/50"
+              />
+            </div>
+          )}
         </div>
 
         <div className="mt-8 pt-8 border-t border-surface-container-low">

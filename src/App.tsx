@@ -13,6 +13,7 @@ import Stats from './components/Stats';
 import Challenges from './components/Challenges';
 import Accounts from './components/Accounts';
 import Profile from './components/Profile';
+import AdminPanel from './components/AdminPanel';
 import Login from './components/Login';
 import { useSpendlyStore } from './store';
 
@@ -27,6 +28,36 @@ export default function App() {
       (window as any).spendlyStore = store;
     }
   }, [store]);
+
+  useEffect(() => {
+    if (user && !isLoading) {
+      const urlParams = new URLSearchParams(window.location.search);
+      const inviteToken = urlParams.get('invite');
+      if (inviteToken) {
+        import('./firebase').then(({ auth }) => {
+          auth.currentUser?.getIdToken().then(token => {
+            fetch('/api/admin/accept-invite', {
+              method: 'POST',
+              headers: { 
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ token: inviteToken })
+            }).then(res => res.json()).then(data => {
+              if (data.success) {
+                alert('Félicitations, vous êtes maintenant administrateur !');
+                window.history.replaceState({}, document.title, window.location.pathname);
+                // Trigger a reload to update admin state
+                window.location.reload();
+              } else {
+                alert('Lien invalide ou expiré.');
+              }
+            });
+          });
+        });
+      }
+    }
+  }, [user, isLoading]);
 
   if (isLoading) {
     return (
@@ -60,6 +91,7 @@ export default function App() {
       case 'challenges': return <Challenges store={store} />;
       case 'comptes': return <Accounts store={store} />;
       case 'profil': return <Profile store={store} />;
+      case 'admin': return store.isAdmin ? <AdminPanel seedMockData={store.seedMockData} /> : <div />;
       default:
         return (
           <div className="flex flex-col items-center justify-center h-[60vh] text-secondary">
@@ -76,6 +108,7 @@ export default function App() {
       case 'challenges': return 'Economies';
       case 'comptes': return 'Mes Comptes';
       case 'profil': return 'Mon Profil';
+      case 'admin': return 'Administration';
       default: return 'Spendly';
     }
   };
@@ -102,7 +135,7 @@ export default function App() {
         </motion.div>
       </main>
 
-      <Navigation activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Navigation activeTab={activeTab} setActiveTab={setActiveTab} isAdmin={store.isAdmin} />
     </div>
   );
 }

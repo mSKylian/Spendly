@@ -10,7 +10,11 @@ import { slugFromLegacy } from '../src/lib/taxonomy';
 async function main() {
   const projectId = process.env.VITE_FIREBASE_PROJECT_ID;
   if (!projectId) throw new Error('VITE_FIREBASE_PROJECT_ID is not set');
-  const db = getFirestore(initializeApp({ projectId }));
+  const databaseId = process.env.VITE_FIREBASE_DATABASE_ID;
+  const app = initializeApp({ projectId });
+  const db = databaseId && databaseId !== '(default)'
+    ? getFirestore(app, databaseId)
+    : getFirestore(app);
 
   const users = await db.collection('users').get();
   let txUpdated = 0, chUpdated = 0;

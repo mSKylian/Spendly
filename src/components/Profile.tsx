@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { User, Mail, Calendar, TrendingDown, Save, CheckCircle, LogOut, ShieldCheck } from 'lucide-react';
 import { SpendlyStore } from '../store';
-import AdminPanel from './AdminPanel';
 
 interface ProfileProps {
   store: SpendlyStore;

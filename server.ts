@@ -82,8 +82,10 @@ try {
 function isCredentialError(e: any): boolean {
   const msg = String(e?.message || '');
   return e?.code === 16 /* UNAUTHENTICATED */
+    || e?.code === 7 /* PERMISSION_DENIED */
     || msg.includes('Could not load the default credentials')
-    || msg.includes('UNAUTHENTICATED');
+    || msg.includes('UNAUTHENTICATED')
+    || msg.includes('PERMISSION_DENIED');
 }
 
 function firestoreErrorResponse(res: express.Response, e: any, context: string) {
@@ -170,12 +172,17 @@ function decrypt(text: string): string {
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   const PORT = 3000;
 
   app.use(express.json());
 
   // Security headers
   app.use(helmet({
+    xFrameOptions: false,
+    crossOriginOpenerPolicy: false, // Required for Firebase Auth popup
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: false, // Required for Safari ESM module loading
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
@@ -198,11 +205,9 @@ async function startServer() {
         ],
         frameSrc: ["'self'", 'https://*.firebaseapp.com', 'https://accounts.google.com'],
         objectSrc: ["'none'"],
+        frameAncestors: null, // Allow embedding in AI Studio iframe
       }
-    },
-    crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: false, // Required for Firebase Auth popup
-    crossOriginResourcePolicy: false, // Required for Safari ESM module loading
+    }
   }));
 
   // Rate limiting
@@ -257,6 +262,58 @@ async function startServer() {
 
 
   // API Routes
+  // Admin & Invites
+  app.get("/api/admin/check", authenticate, async (req, res) => {
+    try {
+      const user = (req as any).user;
+      const adminDoc = await db.collection('admins').doc(user.uid).get();
+      res.json({ isAdmin: adminDoc.exists });
+    } catch (e) {
+      res.status(500).json({ error: 'Failed to check admin status' });
+    }
+  });
+
+  app.post("/api/admin/invite", authenticate, verifyAdmin, async (req, res) => {
+    try {
+      const token = crypto.randomBytes(32).toString('hex');
+      await db.collection('admin_invites').doc(token).set({
+        createdAt: new Date().toISOString(),
+        createdBy: (req as any).user.uid,
+        used: false
+      });
+      res.json({ token });
+    } catch (e) {
+      res.status(500).json({ error: 'Failed to create invite' });
+    }
+  });
+
+  app.post("/api/admin/accept-invite", authenticate, async (req, res) => {
+    try {
+      const { token } = req.body;
+      if (!token) return res.status(400).json({ error: 'Token required' });
+      
+      const inviteRef = db.collection('admin_invites').doc(token);
+      const inviteDoc = await inviteRef.get();
+      
+      if (!inviteDoc.exists || inviteDoc.data()?.used) {
+        return res.status(400).json({ error: 'Invalid or expired invite' });
+      }
+      
+      const user = (req as any).user;
+      const batch = db.batch();
+      batch.set(db.collection('admins').doc(user.uid), {
+        addedAt: new Date().toISOString(),
+        addedBy: inviteDoc.data()?.createdBy
+      });
+      batch.update(inviteRef, { used: true, usedBy: user.uid, usedAt: new Date().toISOString() });
+      
+      await batch.commit();
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: 'Failed to accept invite' });
+    }
+  });
+
   app.get("/api/admin/config", authenticate, verifyAdmin, async (req, res) => {
     try {
       const doc = await db.collection('admin').doc('llm_config').get();
@@ -314,8 +371,14 @@ async function startServer() {
     }
 
     try {
-      const docConfig = await db.collection('admin').doc('llm_config').get();
-      const config = docConfig.exists ? docConfig.data() : null;
+      let config: any = null;
+      try {
+        const docConfig = await db.collection('admin').doc('llm_config').get();
+        config = docConfig.exists ? docConfig.data() : null;
+      } catch (e: any) {
+        if (!isCredentialError(e)) throw e;
+        console.warn('[Spendly] Skipping Firestore llm_config due to Admin SDK permissions. Falling back to env vars.');
+      }
       let apiKey = '';
       if (config?.apiKey) {
         try { apiKey = decrypt(config.apiKey); } catch(e) {}
@@ -418,8 +481,14 @@ async function startServer() {
     }
 
     try {
-      const docConfig = await db.collection('admin').doc('llm_config').get();
-      const config = docConfig.exists ? docConfig.data() : null;
+      let config: any = null;
+      try {
+        const docConfig = await db.collection('admin').doc('llm_config').get();
+        config = docConfig.exists ? docConfig.data() : null;
+      } catch (e: any) {
+        if (!isCredentialError(e)) throw e;
+        console.warn('[Spendly] Skipping Firestore llm_config due to Admin SDK permissions. Falling back to env vars.');
+      }
       let apiKey = '';
       if (config?.apiKey) {
         try { apiKey = decrypt(config.apiKey); } catch (e) {}
@@ -627,8 +696,14 @@ async function startServer() {
     
     try {
       // 2. Fetch config
-      const doc = await db.collection('admin').doc('llm_config').get();
-      const config = doc.exists ? doc.data() : null;
+      let config: any = null;
+      try {
+        const doc = await db.collection('admin').doc('llm_config').get();
+        config = doc.exists ? doc.data() : null;
+      } catch (e: any) {
+        if (!isCredentialError(e)) throw e;
+        console.warn('[Spendly] Skipping Firestore llm_config due to Admin SDK permissions. Falling back to env vars.');
+      }
 
       if (config && config.isEnabled === false) {
         return res.json({ insight: "L'analyse IA est actuellement désactivée par l'administrateur.", newChallenges: [] });
@@ -641,12 +716,16 @@ async function startServer() {
       // 1. Check cache cache (skipped on an explicit forced re-analysis, e.g. a
       // user clicking "analyser" — they expect a fresh run even if nothing changed)
       if (!force) {
-        const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
-        if (cacheDoc.exists) {
-           const data = cacheDoc.data()!;
-           if (data.hash === transactionsHash && data.promptVersion === (config?.updatedAt || 'v1')) {
-              return res.json({ insight: data.insight, newChallenges: data.newChallenges });
-           }
+        try {
+          const cacheDoc = await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').get();
+          if (cacheDoc.exists) {
+             const data = cacheDoc.data()!;
+             if (data.hash === transactionsHash && data.promptVersion === (config?.updatedAt || 'v1')) {
+                return res.json({ insight: data.insight, newChallenges: data.newChallenges });
+             }
+          }
+        } catch (e: any) {
+          if (!isCredentialError(e)) throw e;
         }
       }
 
@@ -769,13 +848,17 @@ async function startServer() {
       }
 
       if (newChallenges.length > 0) {
-        await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').set({
-           hash: transactionsHash,
-           insight,
-           newChallenges,
-           promptVersion: config?.updatedAt || 'v1',
-           analyzedAt: new Date().toISOString()
-        });
+        try {
+          await db.collection('users').doc(user.uid).collection('cache').doc('recommendations').set({
+             hash: transactionsHash,
+             insight,
+             newChallenges,
+             promptVersion: config?.updatedAt || 'v1',
+             analyzedAt: new Date().toISOString()
+          });
+        } catch (e: any) {
+          if (!isCredentialError(e)) throw e;
+        }
       }
 
       res.json({ insight, newChallenges });
@@ -798,6 +881,12 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Global JSON error handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Unhandled Express Error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

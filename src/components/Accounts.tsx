@@ -42,6 +42,8 @@ export default function Accounts({ store }: AccountsProps) {
   const [error, setError] = useState<string | null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
+  const [accountToEdit, setAccountToEdit] = useState<Account | null>(null);
+  const [editForm, setEditForm] = useState({ name: '', iconName: 'bank' as Account['iconName'] });
   const [manual, setManual] = useState({ name: '', bankName: '', type: 'current' as Account['type'], openingBalance: '' });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -187,13 +189,17 @@ export default function Accounts({ store }: AccountsProps) {
           <p className="font-display text-3xl font-extrabold tracking-tight">{fmt(selectedAccount.balance)} €</p>
         </section>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <button onClick={() => openImportForAccount(selectedAccount.id)}
-            className="flex items-center justify-center gap-2 bg-primary text-white py-3 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95">
-            <UploadCloud size={18} /> Importer un relevé
+            className="flex flex-col items-center justify-center gap-1 bg-primary text-white py-3 rounded-2xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95 text-[10px] uppercase tracking-widest">
+            <UploadCloud size={18} /> Importer
+          </button>
+          <button onClick={() => { setAccountToEdit(selectedAccount); setEditForm({ name: selectedAccount.name, iconName: selectedAccount.iconName }); }}
+            className="flex flex-col items-center justify-center gap-1 border border-surface-container text-secondary py-3 rounded-2xl font-bold hover:bg-surface-container-low transition-all active:scale-95 text-[10px] uppercase tracking-widest">
+            <CreditCard size={18} /> Modifier
           </button>
           <button onClick={() => setAccountToDelete(selectedAccount.id)}
-            className="flex items-center justify-center gap-2 border border-surface-container text-secondary py-3 rounded-2xl font-bold hover:bg-red-50 hover:text-red-500 transition-all active:scale-95">
+            className="flex flex-col items-center justify-center gap-1 border border-surface-container text-secondary py-3 rounded-2xl font-bold hover:bg-red-50 hover:text-red-500 transition-all active:scale-95 text-[10px] uppercase tracking-widest">
             <Trash2 size={18} /> Supprimer
           </button>
         </div>
@@ -305,6 +311,7 @@ export default function Accounts({ store }: AccountsProps) {
 
       {renderModal()}
       {renderDeleteModal()}
+      {renderEditModal()}
     </div>
   );
 
@@ -473,6 +480,56 @@ export default function Accounts({ store }: AccountsProps) {
                   <button type="submit" className="w-full bg-primary text-white py-4 rounded-2xl font-extrabold uppercase tracking-widest shadow-xl shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95 mt-2">Créer le compte</button>
                 </form>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    );
+  }
+
+  function renderEditModal() {
+    return (
+      <AnimatePresence>
+        {accountToEdit && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setAccountToEdit(null)} className="absolute inset-0 bg-primary/20 backdrop-blur-md" />
+            <motion.div initial={{ y: 200, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 200, opacity: 0 }} className="w-full max-w-sm bg-surface-container-lowest rounded-3xl p-6 shadow-2xl relative z-10 border border-white overflow-hidden">
+              <div className="flex flex-col gap-4">
+                <h4 className="font-display font-extrabold text-xl text-center">Modifier le compte</h4>
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-secondary ml-1">Nom du compte</label>
+                    <input 
+                      value={editForm.name} 
+                      onChange={e => setEditForm({ ...editForm, name: e.target.value })} 
+                      required 
+                      className="w-full bg-surface-container-low border border-surface-container p-3.5 rounded-2xl text-sm font-bold focus:outline-none focus:border-primary transition-all" 
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-secondary ml-1">Icône</label>
+                    <select 
+                      value={editForm.iconName} 
+                      onChange={e => setEditForm({ ...editForm, iconName: e.target.value as Account['iconName'] })} 
+                      className="w-full bg-surface-container-low border border-surface-container p-3.5 rounded-2xl text-sm font-bold focus:outline-none focus:border-primary transition-all appearance-none"
+                    >
+                      <option value="bank">Banque (Classique)</option>
+                      <option value="wallet">Portefeuille (PayPal)</option>
+                      <option value="card">Carte (Épargne)</option>
+                      <option value="bitcoin">Bitcoin (Crypto)</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <button onClick={() => setAccountToEdit(null)} className="py-3 rounded-xl font-bold border border-surface-container hover:bg-surface-container-low transition-all">Annuler</button>
+                  <button onClick={async () => {
+                    try {
+                      await store.updateAccount(accountToEdit.id, { name: editForm.name, iconName: editForm.iconName });
+                      setAccountToEdit(null);
+                    } catch (e) { console.error(e); }
+                  }} className="py-3 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all active:scale-95">Enregistrer</button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

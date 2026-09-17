@@ -1,4 +1,4 @@
-export type Tab = 'accueil' | 'stats' | 'comptes' | 'challenges' | 'profil';
+export type Tab = 'accueil' | 'stats' | 'comptes' | 'challenges' | 'profil' | 'admin';
 
 export interface UserProfile {
   name: string;

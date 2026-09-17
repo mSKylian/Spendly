@@ -1,19 +1,24 @@
 import { motion } from 'motion/react';
-import { Home, BarChart2, Wallet, Trophy, User } from 'lucide-react';
+import { Home, BarChart2, Wallet, Trophy, Settings } from 'lucide-react';
 import { Tab } from '../types';
 
 interface NavigationProps {
   activeTab: Tab;
   setActiveTab: (tab: Tab) => void;
+  isAdmin?: boolean;
 }
 
-export default function Navigation({ activeTab, setActiveTab }: NavigationProps) {
+export default function Navigation({ activeTab, setActiveTab, isAdmin }: NavigationProps) {
   const tabs: { id: Tab; label: string; icon: any }[] = [
     { id: 'accueil', label: 'Accueil', icon: Home },
     { id: 'stats', label: 'Stats', icon: BarChart2 },
     { id: 'comptes', label: 'Comptes', icon: Wallet },
     { id: 'challenges', label: 'Economies', icon: Trophy },
   ];
+
+  if (isAdmin) {
+    tabs.push({ id: 'admin', label: 'Admin', icon: Settings });
+  }
 
   return (
     <nav className="fixed bottom-0 left-0 w-full z-50 bg-surface-container-lowest border-t border-surface-container flex justify-around items-center h-20 pb-safe shadow-[0px_-4px_20px_rgba(0,0,0,0.04)] rounded-t-2xl">
