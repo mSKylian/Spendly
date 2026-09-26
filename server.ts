@@ -186,6 +186,7 @@ async function startServer() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        upgradeInsecureRequests: process.env.APP_URL?.startsWith('https://') ? [] : null,
         // apis.google.com + gstatic: gapi loader used by Firebase Auth signInWithPopup
         scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "blob:", 'https://apis.google.com', 'https://www.gstatic.com'],
         styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
