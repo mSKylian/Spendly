@@ -246,6 +246,36 @@ async function startServer() {
     }
   };
 
+  // Public runtime settings intentionally contain no LLM credentials.
+  app.get('/api/app-status', async (_req, res) => {
+    try {
+      const doc = await db.collection('admin').doc('llm_config').get();
+      const data = doc.data() || {};
+      res.set('Cache-Control', 'no-store');
+      res.json({
+        maintenanceMode: data.maintenanceMode === true,
+        announcement: typeof data.announcement === 'string' ? data.announcement.slice(0, 500) : ''
+      });
+    } catch (e) {
+      firestoreErrorResponse(res, e, 'Failed to load application status');
+    }
+  });
+
+  // Pause application APIs during maintenance while keeping sign-in, public
+  // status, and authenticated admin recovery routes available.
+  app.use('/api', async (req, res, next) => {
+    if (req.path === '/app-status' || req.path.startsWith('/admin/')) return next();
+    try {
+      const doc = await db.collection('admin').doc('llm_config').get();
+      if (doc.data()?.maintenanceMode === true) {
+        return res.status(503).json({ error: 'Spendly est temporairement en maintenance.' });
+      }
+      next();
+    } catch (e) {
+      firestoreErrorResponse(res, e, 'Failed to check maintenance status');
+    }
+  });
+
   const verifyAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     const user = (req as any).user;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
@@ -270,7 +300,7 @@ async function startServer() {
       const adminDoc = await db.collection('admins').doc(user.uid).get();
       res.json({ isAdmin: adminDoc.exists });
     } catch (e) {
-      res.status(500).json({ error: 'Failed to check admin status' });
+      firestoreErrorResponse(res, e, 'Failed to check admin status');
     }
   });
 
@@ -343,13 +373,16 @@ async function startServer() {
     }
     try {
       const inviteRef = db.collection('admin_invites').doc(token);
-      const invite = await inviteRef.get();
-      if (!invite.exists || invite.data()?.used) {
-        return res.status(404).json({ error: 'Invitation not found or already used' });
-      }
-      await inviteRef.delete();
+      await db.runTransaction(async (transaction) => {
+        const invite = await transaction.get(inviteRef);
+        if (!invite.exists || invite.data()?.used) throw new Error('INVITE_NOT_REVOCABLE');
+        transaction.delete(inviteRef);
+      });
       res.json({ success: true });
     } catch (e) {
+      if (e instanceof Error && e.message === 'INVITE_NOT_REVOCABLE') {
+        return res.status(404).json({ error: 'Invitation introuvable ou déjà utilisée. Si elle a été acceptée, les droits déjà accordés restent actifs.' });
+      }
       firestoreErrorResponse(res, e, 'Failed to revoke admin invite');
     }
   });
@@ -417,13 +450,9 @@ async function startServer() {
         return res.json({});
       }
       const data = doc.data() as any;
-      if (data.apiKey) {
-        try {
-           data.apiKey = decrypt(data.apiKey);
-        } catch(e) {
-           data.apiKey = ''; // Ignore decrypt error if key rotated
-        }
-      }
+      // Never send a stored secret back to the browser.
+      data.hasApiKey = Boolean(data.apiKey);
+      delete data.apiKey;
       res.json(data);
     } catch (e) {
       firestoreErrorResponse(res, e, 'Failed to fetch config');
@@ -432,18 +461,22 @@ async function startServer() {
 
   app.post("/api/admin/clear-cache", authenticate, verifyAdmin, async (req, res) => {
     try {
-      const usersSnapshot = await db.collection('users').get();
-      const batch = db.batch();
+      let query = db.collection('users').orderBy(FieldPath.documentId()).limit(400);
       let count = 0;
-      for (const doc of usersSnapshot.docs) {
-        const cacheDocRef = db.collection('users').doc(doc.id).collection('cache').doc('recommendations');
-        batch.delete(cacheDocRef);
-        count++;
-      }
-      if (count > 0) {
+      let cursor: FirebaseFirestore.QueryDocumentSnapshot | undefined;
+      while (true) {
+        const page = await (cursor ? query.startAfter(cursor) : query).get();
+        if (page.empty) break;
+        const batch = db.batch();
+        for (const doc of page.docs) {
+          batch.delete(doc.ref.collection('cache').doc('recommendations'));
+          count++;
+        }
         await batch.commit();
+        cursor = page.docs[page.docs.length - 1];
+        if (page.size < 400) break;
       }
-      res.json({ success: true });
+      res.json({ success: true, processedUsers: count });
     } catch (e) {
       firestoreErrorResponse(res, e, 'Failed to clear cache');
     }
@@ -751,7 +784,7 @@ async function startServer() {
 
   app.post("/api/admin/config", authenticate, verifyAdmin, async (req, res) => {
     try {
-      const { provider, url, model, apiKey, systemPrompt, isEnabled, maxTransactions, maintenanceMode, allowSignups, announcement } = req.body;
+      const { provider, url, model, apiKey, systemPrompt, isEnabled, maxTransactions, maintenanceMode, announcement } = req.body;
       const validated = validateBaseUrl(url);
       if (validated.error) {
         return res.status(400).json({ error: validated.error });
@@ -764,7 +797,6 @@ async function startServer() {
         isEnabled: isEnabled !== false, 
         maxTransactions: maxTransactions || 50,
         maintenanceMode: !!maintenanceMode,
-        allowSignups: allowSignups !== false,
         announcement: announcement || '',
         updatedAt: new Date().toISOString() 
       };

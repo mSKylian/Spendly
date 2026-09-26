@@ -53,8 +53,27 @@ class ScreenErrorBoundary extends Component<{
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('accueil');
+  const [runtimeStatus, setRuntimeStatus] = useState<{ maintenanceMode: boolean; announcement: string } | null>(null);
+  const [runtimeStatusError, setRuntimeStatusError] = useState('');
   const store = useSpendlyStore();
   const { user, isLoading, login } = store;
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/app-status', { cache: 'no-store' })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Impossible de charger les paramètres de l’application.');
+        if (active) setRuntimeStatus({
+          maintenanceMode: data.maintenanceMode === true,
+          announcement: typeof data.announcement === 'string' ? data.announcement : ''
+        });
+      })
+      .catch((error) => {
+        if (active) setRuntimeStatusError(error instanceof Error ? error.message : 'Erreur réseau.');
+      });
+    return () => { active = false; };
+  }, []);
 
   // Expose store for dev/admin actions (development only)
   useEffect(() => {
@@ -68,27 +87,25 @@ export default function App() {
       const urlParams = new URLSearchParams(window.location.search);
       const inviteToken = urlParams.get('invite');
       if (inviteToken) {
-        import('./firebase').then(({ auth }) => {
-          auth.currentUser?.getIdToken().then(token => {
-            fetch('/api/admin/accept-invite', {
+        void (async () => {
+          try {
+            const { auth } = await import('./firebase');
+            const token = await auth.currentUser?.getIdToken();
+            if (!token) throw new Error('Session Firebase expirée. Reconnecte-toi puis réessaie.');
+            const res = await fetch('/api/admin/accept-invite', {
               method: 'POST',
-              headers: { 
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-              },
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({ token: inviteToken })
-            }).then(res => res.json()).then(data => {
-              if (data.success) {
-                alert('Félicitations, vous êtes maintenant administrateur !');
-                window.history.replaceState({}, document.title, window.location.pathname);
-                // Trigger a reload to update admin state
-                window.location.reload();
-              } else {
-                alert('Lien invalide ou expiré.');
-              }
             });
-          });
-        });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `Échec de l’acceptation (HTTP ${res.status}).`);
+            alert('Félicitations, vous êtes maintenant administrateur !');
+            window.history.replaceState({}, document.title, window.location.pathname);
+            window.location.reload();
+          } catch (error) {
+            alert(error instanceof Error ? error.message : 'Impossible de contacter le serveur.');
+          }
+        })();
       }
     }
   }, [user, isLoading]);
@@ -133,6 +150,21 @@ export default function App() {
     );
   }
 
+  if (runtimeStatusError && !store.isAdmin) {
+    return <main className="min-h-screen flex items-center justify-center p-6 text-center" role="alert">
+      <div><h1 className="font-bold text-xl">État de Spendly indisponible</h1><p className="mt-2 text-sm text-secondary">{runtimeStatusError}</p></div>
+    </main>;
+  }
+
+  if (runtimeStatus?.maintenanceMode && !store.isAdmin) {
+    return <main className="min-h-screen flex items-center justify-center p-6 text-center">
+      <div><h1 className="font-display font-extrabold text-2xl">Spendly est en maintenance</h1>
+        <p className="mt-3 text-secondary">L’accès sera rétabli dès la fin de l’intervention.</p>
+        {runtimeStatus.announcement && <p className="mt-5 rounded-xl bg-primary/10 p-4 text-sm">{runtimeStatus.announcement}</p>}
+      </div>
+    </main>;
+  }
+
   const renderContent = () => {
     switch (activeTab) {
       case 'accueil': return <Dashboard store={store} />;
@@ -173,6 +205,9 @@ export default function App() {
       />
       
       <main className="pt-20 px-5 max-w-lg mx-auto overflow-x-hidden">
+        {runtimeStatus?.announcement && !runtimeStatus.maintenanceMode && (
+          <aside className="mb-5 rounded-xl bg-primary/10 p-4 text-sm" role="status">{runtimeStatus.announcement}</aside>
+        )}
         {/* A single keyed view that re-mounts and fades in on tab change. No
             AnimatePresence exit-wait, which could deadlock the content swap
             when the store re-renders mid-transition. */}
@@ -192,4 +227,3 @@ export default function App() {
     </div>
   );
 }
-

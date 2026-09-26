@@ -38,7 +38,6 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
     apiKey: '',
     maxTransactions: 50,
     maintenanceMode: false,
-    allowSignups: true,
     announcement: '',
     systemPrompt: "Tu es un conseiller financier expert. Tu vas recevoir une liste de transactions au format JSON. Identifie 2 à 3 recommandations spécifiques pour que l'utilisateur puisse faire des économies directes sur ses dépenses récurrentes ou superflues.\n\nRenvoie UNIQUEMENT un objet JSON avec la clé 'recommendations' contenant un tableau d'objets. Chaque objet doit avoir cette structure EXACTE :\n- \"title\" (titre court)\n- \"subtitle\" (nom du marchand ou sous-titre)\n- \"description\" (explication de l'économie)\n- \"potentialSaving\" (nombre en euros)\n- \"category\" (nom de catégorie courte, ex: \"Abonnement\")\n- \"status\": \"available\"\n- \"level\": 1, 2 ou 3 selon la difficulté."
   });
@@ -64,6 +63,7 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [overviewError, setOverviewError] = useState('');
+  const [clearingCache, setClearingCache] = useState(false);
 
   const handleCreateInvite = async () => {
     setInviteLoading(true);
@@ -191,7 +191,7 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
       } else if (res.status === 403) {
          setIsDenied(true);
       } else {
-        setMessage({ type: 'error', text: 'Erreur lors du chargement de la configuration.' });
+        setMessage({ type: 'error', text: await responseError(res, 'Erreur lors du chargement de la configuration.') });
       }
     } catch (e) {
       console.error(e);
@@ -218,7 +218,7 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
         // Clear api key from state for security
         setConfig((prev: any) => ({ ...prev, apiKey: '' }));
       } else {
-        setMessage({ type: 'error', text: 'Erreur lors de la sauvegarde.' });
+        setMessage({ type: 'error', text: await responseError(res, 'Erreur lors de la sauvegarde.') });
       }
     } catch (e) {
       setMessage({ type: 'error', text: 'Erreur réseau.' });
@@ -421,21 +421,8 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
             </button>
           </div>
 
-          <div className="flex items-center justify-between pb-4 border-b border-surface-container-low">
-            <div>
-              <label className="block text-sm font-bold">Inscriptions</label>
-              <p className="text-xs text-secondary mt-1">Autoriser les nouveaux utilisateurs.</p>
-            </div>
-            <button 
-              onClick={() => setConfig({...config, allowSignups: !config.allowSignups})}
-              className={`w-14 h-8 rounded-full flex items-center p-1 transition-all ${config.allowSignups ? 'bg-primary' : 'bg-surface-container-high'}`}
-            >
-              <motion.div 
-                layout
-                className="w-6 h-6 bg-white rounded-full shadow-sm"
-                style={{ x: config.allowSignups ? 24 : 0 }}
-              />
-            </button>
+          <div className="flex items-center pb-4 border-b border-surface-container-low">
+            <p className="text-xs text-secondary">Contrôle des inscriptions indisponible : Firebase Auth doit être configuré avec une fonction de blocage côté plateforme.</p>
           </div>
         </div>
 
@@ -531,7 +518,7 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
              type="password" 
              value={config.apiKey}
              onChange={e => setConfig({...config, apiKey: e.target.value})}
-             placeholder="sk-..."
+             placeholder={config.hasApiKey ? 'Clé enregistrée (laisser vide pour la conserver)' : 'sk-...'}
              className="w-full bg-surface-container p-3.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none font-mono tracking-widest"
            />
            <p className="text-[10px] uppercase font-bold text-secondary/60 mt-2 ml-1">Automatiquement chiffrée (AES-256) sur le serveur. Laisser vide si inchangée.</p>
@@ -583,20 +570,24 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
           <motion.button 
             whileTap={{ scale: 0.98 }}
             onClick={async () => {
-              if (confirm('Vider le cache IA pour tous les utilisateurs ?')) {
-                 const token = await auth.currentUser?.getIdToken();
-                 fetch('/api/admin/clear-cache', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}` }
-                 }).then(res => {
-                    if (res.ok) alert('Cache vidé avec succès !');
-                    else alert('Erreur lors du nettoyage du cache.');
-                 });
+              if (!confirm('Vider le cache IA pour tous les utilisateurs ?')) return;
+              setClearingCache(true);
+              setMessage(null);
+              try {
+                const res = await fetch('/api/admin/clear-cache', { method: 'POST', headers: await adminHeaders() });
+                if (!res.ok) throw new Error(await responseError(res, 'Échec du nettoyage du cache.'));
+                const data = await res.json();
+                setMessage({ type: 'success', text: `Cache IA vidé. ${data.processedUsers} profils traités.` });
+              } catch (e) {
+                setMessage({ type: 'error', text: e instanceof Error ? e.message : 'Erreur réseau.' });
+              } finally {
+                setClearingCache(false);
               }
             }}
-            className="px-6 bg-error/10 text-error font-bold rounded-xl flex items-center justify-center hover:bg-error/20 transition-all uppercase tracking-widest text-sm"
+            disabled={clearingCache}
+            className="px-6 bg-error/10 text-error font-bold rounded-xl flex items-center justify-center hover:bg-error/20 transition-all uppercase tracking-widest text-sm disabled:opacity-50"
           >
-            Vider Cache IA
+            {clearingCache ? 'Nettoyage...' : 'Vider Cache IA'}
           </motion.button>
         </div>
 
