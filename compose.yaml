@@ -19,7 +19,7 @@ services:
       NODE_ENV: production
       APP_URL: ${APP_URL:-http://localhost:3000}
     ports:
-      - "${SPENDLY_BIND_ADDRESS:-127.0.0.1}:3000:3000"
+      - "${SPENDLY_BIND_ADDRESS:-0.0.0.0}:3000:3000"
     healthcheck:
       test:
         - CMD

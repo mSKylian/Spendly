@@ -88,8 +88,15 @@ docker compose ps
 docker compose logs -f
 ```
 
-Par défaut, le port `3000` est lié à `127.0.0.1` sur le serveur. Pour y accéder
-depuis ton ordinateur avec un tunnel SSH :
+Par défaut, le port `3000` écoute sur toutes les interfaces réseau. Depuis un
+appareil du même réseau, ouvre `http://IP_DU_SERVEUR:3000` (par exemple
+`http://192.168.1.20:3000`). Autorise le port `3000` dans le pare-feu uniquement
+pour ton réseau local et ne l'expose pas directement à Internet. Pour limiter
+Spendly à la machine elle-même, définis `SPENDLY_BIND_ADDRESS=127.0.0.1` dans
+`.env`.
+
+Un tunnel SSH reste disponible si tu préfères garder le port inaccessible sur
+le réseau :
 
 ```bash
 ssh -L 3000:127.0.0.1:3000 utilisateur@serveur
