@@ -63,6 +63,32 @@ npm run dev
 
 Le serveur démarre sur `http://localhost:3000` (client Vite + API Express).
 
+## 🐳 Déploiement Docker
+
+Le dépôt inclut un `Dockerfile` et un fichier Compose pour construire l'app en
+production. Sur le serveur, clone le dépôt, configure `.env` avec les valeurs
+Firebase et serveur décrites ci-dessous, puis ajoute la clé de compte de service
+Firebase Admin dans `firebase-service-account.json` (ou indique son chemin avec
+`FIREBASE_SERVICE_ACCOUNT_FILE`). Ces fichiers restent hors de Git.
+
+```bash
+cp .env.example .env
+# Renseigner les valeurs dans .env et déposer la clé Firebase Admin
+docker compose up -d --build
+```
+
+L'application est disponible sur le port `3000`. Pour synchroniser une nouvelle
+version depuis GitHub et la redémarrer :
+
+```bash
+git pull --ff-only origin main
+docker compose up -d --build
+```
+
+Vérifier l'état avec `docker compose ps` et consulter les journaux avec
+`docker compose logs -f spendly`. Le compte de service Firebase Admin doit avoir
+les accès Firestore nécessaires. Ne commite jamais `.env` ni la clé JSON.
+
 Toute la configuration — Firebase **et** serveur — vit désormais dans un seul
 fichier `.env` (voir `.env.example`). Il n'y a plus de fichier
 `firebase-applet-config.json` séparé.
