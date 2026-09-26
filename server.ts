@@ -4,7 +4,7 @@ import { createServer as createViteServer } from "vite";
 import crypto from "crypto";
 import 'dotenv/config';
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldPath, getFirestore } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import OpenAI from "openai";
 import rateLimit from 'express-rate-limit';
@@ -292,17 +292,82 @@ async function startServer() {
     }
   });
 
+  app.get("/api/admin/users", authenticate, verifyAdmin, async (req, res) => {
+    try {
+      const requestedLimit = Number(req.query.limit);
+      const limit = Number.isInteger(requestedLimit) ? Math.min(100, Math.max(1, requestedLimit)) : 25;
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : '';
+      if (cursor && !/^[A-Za-z0-9_-]{1,128}$/.test(cursor)) {
+        return res.status(400).json({ error: 'Invalid cursor' });
+      }
+
+      let query = db.collection('users').orderBy(FieldPath.documentId()).limit(limit + 1);
+      if (cursor) query = query.startAfter(cursor);
+      const snapshot = await query.get();
+      const hasMore = snapshot.docs.length > limit;
+      const page = snapshot.docs.slice(0, limit);
+      res.json({
+        users: page.map((document) => {
+          const data = document.data();
+          return {
+            id: document.id,
+            name: typeof data.name === 'string' ? data.name : '',
+            email: typeof data.email === 'string' ? data.email : '',
+            tier: data.tier === 'pro' ? 'pro' : 'free'
+          };
+        }),
+        nextCursor: hasMore ? page[page.length - 1]?.id || null : null
+      });
+    } catch (e) {
+      firestoreErrorResponse(res, e, 'Failed to load admin users');
+    }
+  });
+
+  app.get("/api/admin/invites", authenticate, verifyAdmin, async (_req, res) => {
+    try {
+      const snapshot = await db.collection('admin_invites').where('used', '==', false).limit(100).get();
+      const now = Date.now();
+      const invites = snapshot.docs
+        .map((document) => ({ id: document.id, ...document.data() }))
+        .filter((invite: any) => !invite.expiresAt || Date.parse(invite.expiresAt) > now);
+      res.json({ invites });
+    } catch (e) {
+      firestoreErrorResponse(res, e, 'Failed to load admin invites');
+    }
+  });
+
+  app.delete("/api/admin/invites/:token", authenticate, verifyAdmin, async (req, res) => {
+    const { token } = req.params;
+    if (!/^[a-f0-9]{64}$/.test(token)) {
+      return res.status(400).json({ error: 'Invalid invite token' });
+    }
+    try {
+      const inviteRef = db.collection('admin_invites').doc(token);
+      const invite = await inviteRef.get();
+      if (!invite.exists || invite.data()?.used) {
+        return res.status(404).json({ error: 'Invitation not found or already used' });
+      }
+      await inviteRef.delete();
+      res.json({ success: true });
+    } catch (e) {
+      firestoreErrorResponse(res, e, 'Failed to revoke admin invite');
+    }
+  });
+
   app.post("/api/admin/invite", authenticate, verifyAdmin, async (req, res) => {
     try {
       const token = crypto.randomBytes(32).toString('hex');
+      const createdAt = new Date();
+      const expiresAt = new Date(createdAt.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
       await db.collection('admin_invites').doc(token).set({
-        createdAt: new Date().toISOString(),
+        createdAt: createdAt.toISOString(),
+        expiresAt,
         createdBy: (req as any).user.uid,
         used: false
       });
-      res.json({ token });
+      res.json({ token, expiresAt });
     } catch (e) {
-      res.status(500).json({ error: 'Failed to create invite' });
+      firestoreErrorResponse(res, e, 'Failed to create invite');
     }
   });
 
@@ -311,25 +376,37 @@ async function startServer() {
       const { token } = req.body;
       if (!token) return res.status(400).json({ error: 'Token required' });
       
-      const inviteRef = db.collection('admin_invites').doc(token);
-      const inviteDoc = await inviteRef.get();
-      
-      if (!inviteDoc.exists || inviteDoc.data()?.used) {
+      if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) {
         return res.status(400).json({ error: 'Invalid or expired invite' });
       }
-      
+
       const user = (req as any).user;
-      const batch = db.batch();
-      batch.set(db.collection('admins').doc(user.uid), {
-        addedAt: new Date().toISOString(),
-        addedBy: inviteDoc.data()?.createdBy
+      const inviteRef = db.collection('admin_invites').doc(token);
+      await db.runTransaction(async (transaction) => {
+        const inviteDoc = await transaction.get(inviteRef);
+        const invite = inviteDoc.data();
+        if (!inviteDoc.exists || !invite || invite.used) {
+          throw new Error('INVITE_INVALID');
+        }
+        if (invite.expiresAt && Date.parse(invite.expiresAt) <= Date.now()) {
+          throw new Error('INVITE_EXPIRED');
+        }
+        transaction.set(db.collection('admins').doc(user.uid), {
+          addedAt: new Date().toISOString(),
+          addedBy: invite.createdBy
+        });
+        transaction.update(inviteRef, {
+          used: true,
+          usedBy: user.uid,
+          usedAt: new Date().toISOString()
+        });
       });
-      batch.update(inviteRef, { used: true, usedBy: user.uid, usedAt: new Date().toISOString() });
-      
-      await batch.commit();
       res.json({ success: true });
     } catch (e) {
-      res.status(500).json({ error: 'Failed to accept invite' });
+      if (e instanceof Error && ['INVITE_INVALID', 'INVITE_EXPIRED'].includes(e.message)) {
+        return res.status(400).json({ error: 'Invalid or expired invite' });
+      }
+      firestoreErrorResponse(res, e, 'Failed to accept invite');
     }
   });
 

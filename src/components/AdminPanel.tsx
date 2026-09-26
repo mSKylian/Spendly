@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Settings, Save, AlertCircle, Check, Key, Smartphone, RefreshCcw, Loader2, Copy } from 'lucide-react';
+import { Settings, Save, AlertCircle, Check, Key, Smartphone, RefreshCcw, Loader2, Copy, Search, Trash2, Users } from 'lucide-react';
 import { auth } from '../firebase';
 
 type AdminOverview = {
@@ -9,6 +9,25 @@ type AdminOverview = {
   pendingInvites: number;
   checkedAt: string;
 };
+
+type AdminUser = { id: string; name: string; email: string; tier: 'free' | 'pro' };
+type AdminInvite = { id: string; createdAt: string; expiresAt?: string; createdBy: string };
+
+async function adminHeaders(): Promise<Record<string, string>> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Session Firebase expirée. Reconnecte-toi.');
+  return { Authorization: `Bearer ${await user.getIdToken()}` };
+}
+
+async function responseError(response: Response, fallback: string): Promise<string> {
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 503) {
+    return data.error || 'Firestore indisponible. Configure les identifiants Google Admin sur le serveur.';
+  }
+  if (response.status === 401) return 'Session expirée. Reconnecte-toi.';
+  if (response.status === 403) return 'Ce compte n’a pas les droits administrateur.';
+  return data.error || fallback;
+}
 
 export default function AdminPanel({ seedMockData }: { seedMockData?: () => Promise<void> }) {
   const [config, setConfig] = useState<any>({
@@ -31,33 +50,108 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState('');
   const [inviteToken, setInviteToken] = useState('');
+  const [inviteExpiresAt, setInviteExpiresAt] = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState('');
+  const [invites, setInvites] = useState<AdminInvite[]>([]);
+  const [invitesLoading, setInvitesLoading] = useState(true);
+  const [revokingInvite, setRevokingInvite] = useState('');
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [usersError, setUsersError] = useState('');
+  const [userSearch, setUserSearch] = useState('');
+  const [usersCursor, setUsersCursor] = useState<string | null>(null);
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(true);
   const [overviewError, setOverviewError] = useState('');
 
   const handleCreateInvite = async () => {
+    setInviteLoading(true);
+    setInviteError('');
     try {
-      const token = await auth.currentUser?.getIdToken();
       const res = await fetch('/api/admin/invite', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: await adminHeaders()
       });
-      if (res.ok) {
-        const data = await res.json();
-        const link = `${window.location.origin}?invite=${data.token}`;
-        setInviteToken(link);
-      } else {
-        setMessage({ type: 'error', text: 'Erreur lors de la création du lien.' });
-      }
+      if (!res.ok) throw new Error(await responseError(res, 'Échec de création de l’invitation.'));
+      const data = await res.json();
+      setInviteToken(`${window.location.origin}?invite=${data.token}`);
+      setInviteExpiresAt(data.expiresAt || '');
+      setMessage({ type: 'success', text: 'Invitation créée. Elle expirera dans 7 jours.' });
+      await Promise.all([fetchInvites(), fetchOverview()]);
     } catch (e) {
-      setMessage({ type: 'error', text: 'Erreur réseau.' });
+      setInviteError(e instanceof Error ? e.message : 'Erreur réseau.');
+    } finally {
+      setInviteLoading(false);
     }
   };
 
   useEffect(() => {
     fetchConfig();
     fetchOverview();
+    fetchInvites();
+    fetchUsers();
   }, []);
+
+  const fetchInvites = async () => {
+    setInvitesLoading(true);
+    try {
+      const res = await fetch('/api/admin/invites', { headers: await adminHeaders() });
+      if (!res.ok) throw new Error(await responseError(res, 'Impossible de charger les invitations.'));
+      const data = await res.json();
+      setInvites(data.invites || []);
+    } catch (e) {
+      setInviteError(e instanceof Error ? e.message : 'Erreur réseau.');
+    } finally {
+      setInvitesLoading(false);
+    }
+  };
+
+  const revokeInvite = async (token: string) => {
+    setRevokingInvite(token);
+    setInviteError('');
+    try {
+      const res = await fetch(`/api/admin/invites/${encodeURIComponent(token)}`, {
+        method: 'DELETE',
+        headers: await adminHeaders()
+      });
+      if (!res.ok) throw new Error(await responseError(res, 'Impossible de révoquer cette invitation.'));
+      setInvites((current) => current.filter((invite) => invite.id !== token));
+      setMessage({ type: 'success', text: 'Invitation révoquée.' });
+      await fetchOverview();
+    } catch (e) {
+      setInviteError(e instanceof Error ? e.message : 'Erreur réseau.');
+    } finally {
+      setRevokingInvite('');
+    }
+  };
+
+  const fetchUsers = async (cursor?: string, append = false) => {
+    setUsersLoading(true);
+    setUsersError('');
+    try {
+      const params = new URLSearchParams({ limit: '25' });
+      if (cursor) params.set('cursor', cursor);
+      const res = await fetch(`/api/admin/users?${params}`, { headers: await adminHeaders() });
+      if (!res.ok) throw new Error(await responseError(res, 'Impossible de charger les utilisateurs.'));
+      const data = await res.json();
+      setUsers((current) => append ? [...current, ...(data.users || [])] : (data.users || []));
+      setUsersCursor(data.nextCursor || null);
+    } catch (e) {
+      setUsersError(e instanceof Error ? e.message : 'Erreur réseau.');
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const handleCopyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteToken);
+      setMessage({ type: 'success', text: 'Lien d’invitation copié.' });
+    } catch {
+      setMessage({ type: 'error', text: 'Copie impossible. Sélectionne le lien pour le copier.' });
+    }
+  };
 
   const fetchOverview = async () => {
     setOverviewLoading(true);
@@ -230,6 +324,69 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
         )}
         {overview?.checkedAt && !overviewError && (
           <p className="mt-2 text-xs text-secondary">Mis à jour à {new Date(overview.checkedAt).toLocaleTimeString('fr-FR')}</p>
+        )}
+      </section>
+
+      <section className="mb-8" aria-labelledby="admin-users-title">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 id="admin-users-title" className="font-display font-extrabold text-lg flex items-center gap-2">
+              <Users size={19} /> Utilisateurs
+            </h3>
+            <p className="text-xs text-secondary mt-1">Recherche et parcours paginé des profils.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => fetchUsers()}
+            disabled={usersLoading}
+            aria-label="Actualiser les utilisateurs"
+            className="p-2 rounded-lg border border-surface-container text-secondary disabled:opacity-50"
+          >
+            <RefreshCcw size={16} className={usersLoading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+        <div className="relative mb-3">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-secondary/50" />
+          <input
+            type="search"
+            value={userSearch}
+            onChange={(event) => setUserSearch(event.target.value)}
+            placeholder="Nom, email ou identifiant"
+            className="w-full bg-surface-container p-3 pl-10 text-sm rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none"
+          />
+        </div>
+        {usersError ? (
+          <div className="p-4 rounded-xl bg-red-50 text-red-700 text-sm" role="alert">{usersError}</div>
+        ) : (
+          <div className="divide-y divide-surface-container border-y border-surface-container">
+            {users.filter((user) => `${user.name} ${user.email} ${user.id}`.toLowerCase().includes(userSearch.trim().toLowerCase())).map((user) => (
+              <div key={user.id} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0">
+                  <p className="font-bold text-sm truncate">{user.name || 'Sans nom'}</p>
+                  <p className="text-xs text-secondary truncate">{user.email || user.id}</p>
+                </div>
+                <span className="shrink-0 text-[10px] font-extrabold uppercase px-2 py-1 rounded-md bg-surface-container text-secondary">
+                  {user.tier}
+                </span>
+              </div>
+            ))}
+            {!usersLoading && users.length === 0 && (
+              <p className="py-6 text-center text-sm text-secondary">Aucun profil trouvé.</p>
+            )}
+            {!usersLoading && users.length > 0 && !users.some((user) => `${user.name} ${user.email} ${user.id}`.toLowerCase().includes(userSearch.trim().toLowerCase())) && (
+              <p className="py-6 text-center text-sm text-secondary">Aucun résultat pour cette recherche.</p>
+            )}
+          </div>
+        )}
+        {usersCursor && (
+          <button
+            type="button"
+            onClick={() => fetchUsers(usersCursor, true)}
+            disabled={usersLoading}
+            className="mt-3 w-full py-3 rounded-lg border border-surface-container text-sm font-bold text-primary disabled:opacity-50"
+          >
+            {usersLoading ? 'Chargement...' : 'Charger 25 profils supplémentaires'}
+          </button>
         )}
       </section>
 
@@ -449,14 +606,18 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
           <motion.button
             whileTap={{ scale: 0.98 }}
             onClick={handleCreateInvite}
-            className="w-full py-4 bg-primary text-white rounded-xl font-bold text-sm uppercase tracking-widest hover:bg-primary/90 transition-all shadow-[0px_8px_16px_rgba(20,93,255,0.2)] mb-4"
+            disabled={inviteLoading}
+            className="w-full py-4 bg-primary text-white rounded-xl font-bold text-sm uppercase tracking-widest hover:bg-primary/90 transition-all shadow-[0px_8px_16px_rgba(20,93,255,0.2)] mb-4 disabled:opacity-50"
           >
-            Générer un lien
+            {inviteLoading ? 'Création...' : 'Générer un lien'}
           </motion.button>
+          {inviteError && <p className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm" role="alert">{inviteError}</p>}
           
           {inviteToken && (
             <div className="p-4 bg-primary/10 rounded-xl mb-4 border border-primary/20">
-              <p className="text-[10px] font-extrabold text-primary mb-2 uppercase tracking-widest">Lien d'invitation (valide 1 fois) :</p>
+              <p className="text-[10px] font-extrabold text-primary mb-2 uppercase tracking-widest">
+                Invitation à usage unique{inviteExpiresAt ? ` · expire le ${new Date(inviteExpiresAt).toLocaleString('fr-FR')}` : ''}
+              </p>
               <input 
                 type="text" 
                 readOnly 
@@ -466,18 +627,62 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
               />
               <button
                 type="button"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(inviteToken);
-                    setMessage({ type: 'success', text: "Lien d'invitation copié." });
-                  } catch {
-                    setMessage({ type: 'error', text: 'Copie impossible. Sélectionne le lien pour le copier.' });
-                  }
-                }}
+                onClick={handleCopyInvite}
                 className="mt-3 flex items-center gap-2 text-sm font-bold text-primary"
               >
                 <Copy size={16} /> Copier le lien
               </button>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-3 mt-6 mb-3">
+            <h4 className="text-xs uppercase font-extrabold text-secondary tracking-widest">Invitations actives</h4>
+            <button type="button" onClick={fetchInvites} disabled={invitesLoading} className="text-xs font-bold text-primary disabled:opacity-50">
+              {invitesLoading ? 'Actualisation...' : 'Actualiser'}
+            </button>
+          </div>
+          {invitesLoading && invites.length === 0 ? (
+            <p className="py-4 text-sm text-secondary">Chargement des invitations...</p>
+          ) : invites.length === 0 ? (
+            <p className="py-4 text-sm text-secondary">Aucune invitation active.</p>
+          ) : (
+            <div className="divide-y divide-surface-container border-y border-surface-container">
+              {invites.map((invite) => (
+                <div key={invite.id} className="flex items-center justify-between gap-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold truncate">Créée le {new Date(invite.createdAt).toLocaleDateString('fr-FR')}</p>
+                    <p className="text-xs text-secondary">
+                      {invite.expiresAt ? `Expire le ${new Date(invite.expiresAt).toLocaleDateString('fr-FR')}` : 'Sans expiration'}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      title="Copier le lien d'invitation"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(`${window.location.origin}?invite=${encodeURIComponent(invite.id)}`);
+                          setMessage({ type: 'success', text: 'Lien d’invitation copié.' });
+                        } catch {
+                          setMessage({ type: 'error', text: 'Copie impossible depuis ce navigateur.' });
+                        }
+                      }}
+                      className="p-2 rounded-lg text-primary hover:bg-primary/10"
+                    >
+                      <Copy size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      title="Révoquer l'invitation"
+                      onClick={() => revokeInvite(invite.id)}
+                      disabled={revokingInvite === invite.id}
+                      className="p-2 rounded-lg text-error hover:bg-error/10 disabled:opacity-50"
+                    >
+                      {revokingInvite === invite.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
