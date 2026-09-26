@@ -158,7 +158,7 @@ export default function Profile({ store }: ProfileProps) {
         </button>
       </section>
 
-      {store.isAdmin && <AdminPanel seedMockData={store.seedMockData} />}
+      <AdminPanel seedMockData={store.seedMockData} />
 
       {/* Saved Toast */}
       <AnimatePresence>
