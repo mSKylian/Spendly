@@ -273,6 +273,24 @@ async function startServer() {
     }
   });
 
+  app.get("/api/admin/overview", authenticate, verifyAdmin, async (_req, res) => {
+    try {
+      const [users, admins, invites] = await Promise.all([
+        db.collection('users').count().get(),
+        db.collection('admins').count().get(),
+        db.collection('admin_invites').where('used', '==', false).count().get()
+      ]);
+      res.json({
+        users: users.data().count,
+        admins: admins.data().count,
+        pendingInvites: invites.data().count,
+        checkedAt: new Date().toISOString()
+      });
+    } catch (e) {
+      firestoreErrorResponse(res, e, 'Failed to load admin overview');
+    }
+  });
+
   app.post("/api/admin/invite", authenticate, verifyAdmin, async (req, res) => {
     try {
       const token = crypto.randomBytes(32).toString('hex');

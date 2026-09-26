@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Settings, Save, AlertCircle, Check, Key, Smartphone, RefreshCcw, Loader2 } from 'lucide-react';
+import { Settings, Save, AlertCircle, Check, Key, Smartphone, RefreshCcw, Loader2, Copy } from 'lucide-react';
 import { auth } from '../firebase';
+
+type AdminOverview = {
+  users: number;
+  admins: number;
+  pendingInvites: number;
+  checkedAt: string;
+};
 
 export default function AdminPanel({ seedMockData }: { seedMockData?: () => Promise<void> }) {
   const [config, setConfig] = useState<any>({
@@ -24,6 +31,9 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelError, setModelError] = useState('');
   const [inviteToken, setInviteToken] = useState('');
+  const [overview, setOverview] = useState<AdminOverview | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState('');
 
   const handleCreateInvite = async () => {
     try {
@@ -46,7 +56,29 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
 
   useEffect(() => {
     fetchConfig();
+    fetchOverview();
   }, []);
+
+  const fetchOverview = async () => {
+    setOverviewLoading(true);
+    setOverviewError('');
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      const res = await fetch('/api/admin/overview', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 403) setIsDenied(true);
+        throw new Error(data.error || 'Impossible de charger les indicateurs.');
+      }
+      setOverview(await res.json());
+    } catch (e) {
+      setOverviewError(e instanceof Error ? e.message : 'Erreur réseau.');
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
 
   const fetchConfig = async () => {
     try {
@@ -162,6 +194,44 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
           <p className="text-secondary text-xs">Configuration de l'IA (Réservé aux Admins)</p>
         </div>
       </div>
+
+      <section className="mb-8" aria-labelledby="admin-overview-title">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h3 id="admin-overview-title" className="font-display font-extrabold text-lg">Vue d'ensemble</h3>
+          <button
+            type="button"
+            onClick={fetchOverview}
+            disabled={overviewLoading}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-surface-container text-sm font-bold text-secondary disabled:opacity-50"
+          >
+            <RefreshCcw size={15} className={overviewLoading ? 'animate-spin' : ''} />
+            Actualiser
+          </button>
+        </div>
+        {overviewError ? (
+          <div className="p-4 rounded-xl bg-red-50 text-red-700 text-sm" role="alert">
+            {overviewError}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              { label: 'Utilisateurs', value: overview?.users },
+              { label: 'Administrateurs', value: overview?.admins },
+              { label: 'Invitations en attente', value: overview?.pendingInvites }
+            ].map(({ label, value }) => (
+              <div key={label} className="bg-surface-container-lowest border border-surface-container-low rounded-xl p-4">
+                <p className="text-xs font-bold uppercase text-secondary">{label}</p>
+                <p className="mt-2 text-2xl font-extrabold tabular-nums">
+                  {overviewLoading && !overview ? '—' : value ?? '—'}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+        {overview?.checkedAt && !overviewError && (
+          <p className="mt-2 text-xs text-secondary">Mis à jour à {new Date(overview.checkedAt).toLocaleTimeString('fr-FR')}</p>
+        )}
+      </section>
 
       {message && (
         <div className={`p-4 rounded-xl mb-6 flex items-center gap-3 ${message.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
@@ -394,6 +464,20 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
                 onClick={(e) => (e.target as HTMLInputElement).select()}
                 className="w-full text-xs p-3 rounded-lg bg-white border border-primary/20 text-secondary focus:outline-none focus:ring-2 focus:ring-primary/50"
               />
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(inviteToken);
+                    setMessage({ type: 'success', text: "Lien d'invitation copié." });
+                  } catch {
+                    setMessage({ type: 'error', text: 'Copie impossible. Sélectionne le lien pour le copier.' });
+                  }
+                }}
+                className="mt-3 flex items-center gap-2 text-sm font-bold text-primary"
+              >
+                <Copy size={16} /> Copier le lien
+              </button>
             </div>
           )}
         </div>
