@@ -24,7 +24,7 @@ export default function Login({ onLogin, onEmailLogin, isLoading }: LoginProps) 
     } catch (err: any) {
       let msg = err.message || 'Erreur de connexion avec Google.';
       if (err.code === 'auth/unauthorized-domain') {
-        msg = "Domaine non autorisé dans Firebase Console (ajoutez 'localhost' dans Authentication > Paramètres > Domaines autorisés).";
+        msg = `Domaine non autorisé dans Firebase Console. Ajoutez '${window.location.hostname}' dans Authentication > Paramètres > Domaines autorisés.`;
       } else if (err.code === 'auth/popup-closed-by-user') {
         msg = "La fenêtre de connexion Google a été fermée.";
       } else if (err.code === 'auth/popup-blocked') {

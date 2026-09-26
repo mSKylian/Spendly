@@ -132,10 +132,22 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
      }
   };
 
-  if (loading) return null;
+  if (loading) {
+    return (
+      <div className="py-12 flex flex-col items-center gap-3 text-secondary" role="status">
+        <Loader2 size={24} className="animate-spin" />
+        <p className="text-sm">Chargement de l'administration...</p>
+      </div>
+    );
+  }
 
   if (isDenied) {
-     return null;
+    return (
+      <div className="py-12 text-center" role="alert">
+        <h2 className="font-bold text-lg">Accès administrateur refusé</h2>
+        <p className="text-sm text-secondary mt-2">Ce compte n'est pas autorisé à consulter cette page.</p>
+      </div>
+    );
   }
 
 

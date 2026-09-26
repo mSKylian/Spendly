@@ -40,6 +40,7 @@ export type SpendlyStore = {
   challenges: Challenge[];
   totalAssets: number;
   isLoading: boolean;
+  loadError: string | null;
   isAiAnalyzing: boolean;
   lastAnalysis: { at: string; newCount: number } | null;
   activateChallenge: (id: string) => Promise<void>;
@@ -113,6 +114,7 @@ export function useSpendlyStore(): SpendlyStore {
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [merchantRules, setMerchantRules] = useState<MerchantRule[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
   const [lastAnalysis, setLastAnalysis] = useState<{ at: string; newCount: number } | null>(null);
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
@@ -123,12 +125,21 @@ export function useSpendlyStore(): SpendlyStore {
       setFbUser(u);
       if (!u) {
         setIsLoading(false);
+        setLoadError(null);
         setUser(null);
+        setIsAdmin(false);
         setAccounts([]);
         setCategories([]);
         setTransactions([]);
         setChallenges([]);
       }
+    }, (error) => {
+      console.error('Firebase auth state failed:', error);
+      setFbUser(null);
+      setUser(null);
+      setIsAdmin(false);
+      setLoadError('Impossible de vérifier la connexion Firebase. Recharge l’application pour réessayer.');
+      setIsLoading(false);
     });
     return unsubscribe;
   }, []);
@@ -138,12 +149,15 @@ export function useSpendlyStore(): SpendlyStore {
     if (!fbUser) return;
 
     setIsLoading(true);
+    setLoadError(null);
+    setIsAdmin(false);
     const userId = fbUser.uid;
 
     const unsubProfile = onSnapshot(doc(db, 'users', userId), async (snap) => {
       if (snap.exists()) {
         const data = snap.data() as UserProfile;
         setUser(data);
+        setIsLoading(false);
         
         try {
           const token = await fbUser.getIdToken();
@@ -153,6 +167,8 @@ export function useSpendlyStore(): SpendlyStore {
           if (res.ok) {
             const data = await res.json();
             setIsAdmin(data.isAdmin || false);
+          } else {
+            setIsAdmin(false);
           }
         } catch (e) {
           console.error("Failed to check admin status", e);
@@ -177,11 +193,19 @@ export function useSpendlyStore(): SpendlyStore {
           DEFAULT_CHALLENGES.forEach(ch => batch.set(doc(collection(db, 'users', userId, 'challenges')), ch));
           await batch.commit();
         } catch (e) {
-          handleFirestoreError(e, OperationType.WRITE, `users/${userId}`);
+          console.error('Failed to initialize user profile:', e);
+          setLoadError('Impossible de créer le profil. Vérifie les règles Firestore et réessaie.');
+          setIsLoading(false);
+          return;
         }
       }
+      setLoadError(null);
       setIsLoading(false);
-    }, (e) => handleFirestoreError(e, OperationType.GET, `users/${userId}`));
+    }, (e) => {
+      console.error('Failed to load user profile:', e);
+      setLoadError('Impossible de charger le profil. Vérifie les règles Firestore et réessaie.');
+      setIsLoading(false);
+    });
 
     const unsubTransactions = onSnapshot(collection(db, 'users', userId, 'transactions'), (snap) => {
       const docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as Transaction));
@@ -737,6 +761,7 @@ export function useSpendlyStore(): SpendlyStore {
     challenges,
     totalAssets,
     isLoading,
+    loadError,
     isAiAnalyzing,
     lastAnalysis,
     activateChallenge,

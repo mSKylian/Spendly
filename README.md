@@ -63,6 +63,44 @@ npm run dev
 
 Le serveur démarre sur `http://localhost:3000` (client Vite + API Express).
 
+## Déploiement Docker
+
+Sur le serveur, clone le dépôt puis prépare la configuration :
+
+```bash
+git clone https://github.com/mSKylian/Spendly.git
+cd Spendly
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Renseigne dans `.env` les variables `VITE_FIREBASE_*` depuis la console
+Firebase et colle une clé générée dans `SERVER_ENCRYPTION_KEY`. Garde ce fichier
+privé et ne le pousse jamais sur GitHub. Le dépôt n'inclut pas d'identifiants
+de compte de service Firebase : les fonctions serveur qui utilisent Firestore
+nécessiteront aussi ces identifiants dans l'environnement du conteneur.
+
+Lance l'application et vérifie son état :
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs -f
+```
+
+Par défaut, le port `3000` est lié à `127.0.0.1` sur le serveur. Pour y accéder
+depuis ton ordinateur avec un tunnel SSH :
+
+```bash
+ssh -L 3000:127.0.0.1:3000 utilisateur@serveur
+```
+
+Ouvre ensuite `http://127.0.0.1:3000` localement. Après un push sur la branche
+`main`, synchronise le serveur avec `sh ./deploy.sh` depuis le dossier du dépôt;
+le script récupère uniquement une avance rapide puis reconstruit le conteneur.
+Configure `APP_URL` dans `.env` avec l'URL publique si l'application passe par
+un reverse proxy HTTPS.
+
 Toute la configuration — Firebase **et** serveur — vit désormais dans un seul
 fichier `.env` (voir `.env.example`). Il n'y a plus de fichier
 `firebase-applet-config.json` séparé.

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { Component, useState, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { motion } from 'motion/react';
 import { Tab } from './types';
 import Navigation from './components/Navigation';
@@ -16,6 +16,40 @@ import Profile from './components/Profile';
 import AdminPanel from './components/AdminPanel';
 import Login from './components/Login';
 import { useSpendlyStore } from './store';
+
+class ScreenErrorBoundary extends Component<{
+  children: ReactNode;
+  onGoHome: () => void;
+}, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Screen render failed:', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <section className="py-12 text-center" role="alert">
+          <h2 className="font-bold text-lg">Cette page n'a pas pu s'afficher.</h2>
+          <p className="text-sm text-secondary mt-2">Réessaie ou retourne à l'accueil.</p>
+          <button
+            className="mt-5 px-4 py-2 rounded-lg bg-primary text-white font-bold"
+            onClick={this.props.onGoHome}
+          >
+            Retour à l'accueil
+          </button>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('accueil');
@@ -74,6 +108,21 @@ export default function App() {
     );
   }
 
+  if (store.loadError) {
+    return (
+      <main className="min-h-screen bg-surface flex flex-col items-center justify-center p-6 text-center" role="alert">
+        <h1 className="font-display font-extrabold text-xl">Données indisponibles</h1>
+        <p className="text-sm text-secondary mt-2">{store.loadError}</p>
+        <button
+          className="mt-5 px-4 py-2 rounded-lg bg-primary text-white font-bold"
+          onClick={() => window.location.reload()}
+        >
+          Réessayer
+        </button>
+      </main>
+    );
+  }
+
   if (!user) {
     return (
       <Login 
@@ -91,7 +140,9 @@ export default function App() {
       case 'challenges': return <Challenges store={store} />;
       case 'comptes': return <Accounts store={store} />;
       case 'profil': return <Profile store={store} />;
-      case 'admin': return store.isAdmin ? <AdminPanel seedMockData={store.seedMockData} /> : <div />;
+      case 'admin': return store.isAdmin
+        ? <AdminPanel seedMockData={store.seedMockData} />
+        : <div className="py-12 text-center" role="alert">Accès réservé aux administrateurs.</div>;
       default:
         return (
           <div className="flex flex-col items-center justify-center h-[60vh] text-secondary">
@@ -131,7 +182,9 @@ export default function App() {
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.25, ease: 'easeInOut' }}
         >
-          {renderContent()}
+          <ScreenErrorBoundary key={activeTab} onGoHome={() => setActiveTab('accueil')}>
+            {renderContent()}
+          </ScreenErrorBoundary>
         </motion.div>
       </main>
 

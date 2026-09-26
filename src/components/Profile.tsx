@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { User, Mail, Calendar, TrendingDown, Save, CheckCircle, LogOut, ShieldCheck } from 'lucide-react';
 import { SpendlyStore } from '../store';
+import AdminPanel from './AdminPanel';
 
 interface ProfileProps {
   store: SpendlyStore;
@@ -157,8 +158,7 @@ export default function Profile({ store }: ProfileProps) {
         </button>
       </section>
 
-      {/* Admin Panel */}
-      <AdminPanel seedMockData={store.seedMockData} />
+      {store.isAdmin && <AdminPanel seedMockData={store.seedMockData} />}
 
       {/* Saved Toast */}
       <AnimatePresence>
