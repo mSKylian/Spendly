@@ -473,6 +473,7 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
               <option value="anthropic">Anthropic (Cloud)</option>
               <option value="google">Google Gemini (Cloud)</option>
               <option value="openrouter">OpenRouter (Cloud)</option>
+              <option value="nvidia">NVIDIA NIM (compatible OpenAI)</option>
               <option value="local">Serveur Local (Ollama, LM Studio)</option>
             </select>
           </div>
@@ -496,10 +497,10 @@ export default function AdminPanel({ seedMockData }: { seedMockData?: () => Prom
              type="text" 
              value={config.url}
              onChange={e => setConfig({...config, url: e.target.value})}
-             placeholder="Ex: http://localhost:11434/v1"
+             placeholder={config.provider === 'nvidia' ? 'https://integrate.api.nvidia.com/v1' : 'Ex: http://localhost:11434/v1'}
              className="w-full bg-surface-container p-3.5 text-sm font-bold rounded-xl outline-none focus:ring-2 focus:ring-primary/20 border-none font-mono"
            />
-           <p className="text-[10px] uppercase font-bold text-secondary/60 mt-2 ml-1">Utile pour Ollama LM Studio ou OpenRouter</p>
+           <p className="text-[10px] uppercase font-bold text-secondary/60 mt-2 ml-1">Compatible OpenAI : Ollama, LM Studio, OpenRouter ou NVIDIA NIM</p>
         </div>
 
         <div>

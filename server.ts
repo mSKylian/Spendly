@@ -103,6 +103,7 @@ const ALLOWED_BASE_URL_HOSTS = [
   'api.openai.com',
   'api.anthropic.com',
   'openrouter.ai',
+  'integrate.api.nvidia.com',
   'localhost',
   '127.0.0.1',
 ];
